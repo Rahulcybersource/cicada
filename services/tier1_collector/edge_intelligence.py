@@ -59,7 +59,7 @@ class TemporalThreatValidationModule:
         win.append(bool(is_threat_detected))
 
         n_p = sum(1 for x in win if x)
-        p_t = n_p / max(1, len(win))
+        p_t = n_p / self.window_size
         is_persistent = p_t >= self.tau_p
         suppress_alarm = not is_persistent and is_threat_detected
 

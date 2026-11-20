@@ -18,6 +18,8 @@ from enum import Enum
 from typing import Any, Literal
 
 from .llm_explain import generate_explainable_rca
+from .multivariate_detector import MultivariateResidualDetector
+from .aoim_triage import aoim_engine
 
 # ─── Configuration ───
 Z_SCORE_THRESHOLD = 2.5
@@ -133,6 +135,7 @@ class Incident:
     z_scores: dict[str, float] = field(default_factory=dict)
     metrics_snapshot: dict[str, float] = field(default_factory=dict)
     security_summary: dict | None = None
+    aoim_triage: dict | None = None
 
 
 @dataclass
@@ -495,6 +498,7 @@ class HybridAIOpsEngine:
         self.correlator = AlertCorrelator()
         self.classifier = HealthStateClassifier()
         self.watchdog = HeartbeatWatchdog()
+        self.multivariate_detector = MultivariateResidualDetector()
         self._rca_semaphore = asyncio.Semaphore(5)  # Limit concurrent LLM calls
 
     async def process_metadata(self, metadata: dict) -> dict:
@@ -519,6 +523,28 @@ class HybridAIOpsEngine:
         anomalies = self.detector.check_anomalies(
             tenant_id, source_id, metrics, event_category, timestamp
         )
+
+        # Check for multivariate anomalies (Google Patent US 2025/0190292 A1)
+        self.multivariate_detector.update(metrics)
+        multi_res = self.multivariate_detector.check_anomaly(metrics)
+        if multi_res and multi_res.is_anomaly:
+            if not any(a.metric_name == multi_res.target_metric for a in anomalies):
+                anomalies.append(Alert(
+                    alert_id=str(uuid.uuid4())[:8],
+                    tenant_id=tenant_id,
+                    source_id=source_id,
+                    event_category=event_category,
+                    severity=Severity.CRITICAL if multi_res.confidence > 0.85 else Severity.WARNING,
+                    metric_name=f"multivariate_{multi_res.target_metric}",
+                    metric_value=multi_res.actual_value,
+                    z_score=multi_res.z_score_residual,
+                    health_state=HealthState.POOR if multi_res.confidence > 0.85 else HealthState.FAIR,
+                    timestamp_utc=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    alert_context=f"Multivariate residual={multi_res.residual:.1f} exceeds interval +/-{multi_res.interval_size:.1f} (expected {multi_res.expected_value:.1f})",
+                ))
+
+        for a in anomalies:
+            aoim_engine.record_alert(a.metric_name)
 
         results = {
             "anomalies_detected": len(anomalies),
@@ -590,6 +616,29 @@ class HybridAIOpsEngine:
             incident.recommended_action = rca_result["recommended_action"]
             incident.ai_provider = rca_result["ai_provider"]
             incident.llm_latency_ms = rca_result["llm_latency_ms"]
+
+            # Evaluate AOIM adaptive triage
+            triage = aoim_engine.evaluate_incident(
+                incident_id=incident.incident_id,
+                severity=incident.severity.value,
+                confidence=incident.confidence,
+                metrics=incident.metrics_snapshot,
+                z_scores=incident.z_scores,
+                contributing_signals=incident.contributing_signals,
+                alert_count=incident.alert_count,
+            )
+            incident.aoim_triage = {
+                "recommended_tier": triage.recommended_tier,
+                "tier_label": triage.tier_label,
+                "confidence": triage.confidence,
+                "dynamic_importance_score": triage.dynamic_importance_score,
+                "feature_attributions": [
+                    {"feature": a.feature, "weight": a.weight, "direction": a.direction, "z_score": a.z_score, "value": a.value}
+                    for a in triage.feature_attributions
+                ],
+                "operator_summary": triage.operator_summary,
+                "technical_explanation": triage.technical_explanation,
+            }
 
     def process_heartbeat(self, metadata: dict) -> CollectorHealth:
         """Process collector heartbeat metadata."""
@@ -705,4 +754,5 @@ def _incident_to_dict(incident: Incident) -> dict:
         "z_scores": incident.z_scores,
         "metrics_snapshot": incident.metrics_snapshot,
         "security_summary": incident.security_summary,
+        "aoim_triage": incident.aoim_triage,
     }

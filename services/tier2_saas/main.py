@@ -32,6 +32,7 @@ from .aiops import (
     process_ingest_payload,
 )
 from .db import (
+    IncidentRecord,
     SessionLocal,
     TelemetryMetadata,
     init_db,
@@ -44,6 +45,13 @@ from .db import (
     upsert_incident,
     validate_regional_residency,
 )
+from .adaptive_watermark import watermark_sorter
+from .remediation import remediation_orchestrator
+from .auth_rbac import Role, audit_log
+from .watchdog_modules.resolver import router as resolver_router
+from .watchdog_modules.watchdog_config import router as watchdog_config_router
+from .watchdog_modules.notifier import router as notifier_router
+from .watchdog_modules.gatekeeper import router as gatekeeper_router
 
 # ─── Lifespan ───
 
@@ -80,6 +88,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Watchdog Control-Plane Modules
+app.include_router(resolver_router)
+app.include_router(watchdog_config_router)
+app.include_router(notifier_router)
+app.include_router(gatekeeper_router)
 
 # ─── Dependency Injection ───
 
@@ -254,6 +268,8 @@ class TelemetryResponse(BaseModel):
 
 
 class IncidentResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     incident_id: str
     tenant_id: str
     source_id: str
@@ -273,6 +289,7 @@ class IncidentResponse(BaseModel):
     z_scores: dict
     metrics_snapshot: dict
     security_summary: dict | None
+    aoim_triage: dict | None = None
 
 
 class CollectorHealthResponse(BaseModel):
@@ -287,11 +304,16 @@ class CollectorHealthResponse(BaseModel):
 
 
 class SlaMetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     active_incidents: int
     tracked_sources: int
     z_score_threshold: float
     correlation_window_seconds: int
     heartbeat_timeout_seconds: int
+    watermark_lag_ms: float = 0.0
+    reversals_prevented: int = 0
+    is_recovery_burst: bool = False
 
 
 # ─── API Endpoints ───
@@ -318,6 +340,11 @@ async def ingest_metadata(
 
     # Idempotent insert
     start_time = time.time()
+    try:
+        event_ts = datetime.fromisoformat(payload.event_timestamp_utc.replace("Z", "+00:00")).timestamp()
+        watermark_sorter.record_observation(start_time, event_ts)
+    except Exception:
+        pass
     payload_id, is_duplicate = insert_telemetry(db, payload.model_dump())
     ingest_latency_ms = int((time.time() - start_time) * 1000)
 
@@ -481,6 +508,13 @@ async def remediate_incident(
         # Policy check (simplified)
         if incident["severity"] == "critical":
             # Require dual approval for critical
+            audit_log.append(
+                tenant_id=tenant_id,
+                user_id=payload.operator_id,
+                role=Role.OPERATOR.value,
+                action="remediation_approval_pending_dual",
+                details={"incident_id": incident_id},
+            )
             return {
                 "status": "pending_dual_approval",
                 "message": "Critical severity requires second operator approval",
@@ -497,19 +531,37 @@ async def remediate_incident(
                 record.status = "acknowledged"
                 db2.commit()
 
+        # Log to tamper-evident audit trail with cryptographic signature
+        audit_rec = audit_log.append(
+            tenant_id=tenant_id,
+            user_id=payload.operator_id,
+            role=Role.OPERATOR.value,
+            action="remediation_approve",
+            details={"incident_id": incident_id},
+        )
+
         return {
             "status": "approved",
             "action": "simulated_remediation",
             "incident_id": incident_id,
             "operator_id": payload.operator_id,
             "rollback_token": f"rb_{incident_id}_{int(time.time())}",
+            "audit_hash": audit_rec.record_hash,
             "message": "Remediation simulated - no actual execution in hackathon mode",
         }
 
     elif payload.action == "rollback":
+        audit_rec = audit_log.append(
+            tenant_id=tenant_id,
+            user_id=payload.operator_id,
+            role=Role.OPERATOR.value,
+            action="remediation_rollback",
+            details={"incident_id": incident_id},
+        )
         return {
             "status": "rolled_back",
             "incident_id": incident_id,
+            "audit_hash": audit_rec.record_hash,
             "message": "Rollback simulated - no actual execution",
         }
 
@@ -521,7 +573,9 @@ async def sla_metrics(
     tenant_id: str = Depends(verify_tenant_auth),
 ):
     """Real-time measured SLA dashboard."""
-    return SlaMetricsResponse(**get_sla_metrics())
+    base = get_sla_metrics()
+    wm = watermark_sorter.get_metrics()
+    return SlaMetricsResponse(**{**base, **wm})
 
 
 @app.post("/api/v1/admin/simulate-outage", response_model=dict)
@@ -532,6 +586,7 @@ async def simulate_outage(
     """Live demo switch for Phase 3 outage test."""
     global INGEST_OUTAGE_MODE
     INGEST_OUTAGE_MODE = payload.enabled
+    watermark_sorter.set_recovery_mode(not payload.enabled)
     return {
         "outage_mode": INGEST_OUTAGE_MODE,
         "message": "Ingest endpoint " + ("disabled" if payload.enabled else "enabled"),
