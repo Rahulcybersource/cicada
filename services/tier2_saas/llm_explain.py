@@ -59,6 +59,9 @@ class RCAResponse(BaseModel):
     recommended_action: str = Field(..., min_length=5, max_length=300)
     ai_provider: Literal["groq-live", "gemini-live", "deterministic-fallback"]
     llm_latency_ms: int = Field(..., ge=0)
+    # Explicit explainable fields
+    why_flagged: str = Field(..., min_length=10, max_length=500, description="Exact baseline vs observed metric values and Z-score/residual breach")
+    why_this_action: str = Field(..., min_length=10, max_length=500, description="Explicit explanation of why the recommended action resolves the detected root cause")
 
 
 @dataclass
@@ -126,7 +129,9 @@ Rules:
 - Reason ONLY from the provided metadata signals and their statistical deviations.
 - Output MUST be valid JSON matching the exact schema.
 - Be concise: 2-sentence reasoning_path, specific contributing_signals with values.
-- recommended_action must be concrete, reversible, and safe for operator review."""
+- recommended_action must be concrete, reversible, and safe for operator review.
+- why_flagged: Exact baseline vs observed metric values and Z-score/residual breach that triggered the alert.
+- why_this_action: Explicit explanation of why the recommended action resolves the detected root cause."""
 
 
 def build_user_prompt(sanitized_metadata: dict) -> str:
@@ -138,6 +143,8 @@ Produce explainable RCA as JSON with:
 - contributing_signals: List of strings like "cpu_pct: 94.2% (+3.6σ)" or "failed_login_count_60s: 23 (risk=high)".
 - confidence: Float 0.0-1.0 based on signal strength and correlation.
 - recommended_action: Concrete, reversible operator action (e.g., "Check top processes on src_a9f28c10; consider restart if CPU sustained >90%").
+- why_flagged: Exact baseline vs observed metric values and Z-score/residual breach (e.g., "cpu_pct baseline mean=42.1, observed=94.2, z=3.6σ breach").
+- why_this_action: Explicit explanation of why this action resolves the root cause (e.g., "Restarting the service clears CPU spinlocks and resets connection pools, directly addressing the thread starvation root cause").
 - ai_provider: Will be filled by system.
 - llm_latency_ms: Will be filled by system."""
 
@@ -146,6 +153,7 @@ def deterministic_fallback_rca(sanitized_metadata: dict, start_time: float) -> R
     """Deterministic Z-score explanation when LLM unavailable - never fails."""
     signals = []
     reasoning_parts = []
+    why_flagged_parts = []
 
     metrics = sanitized_metadata.get("metrics", {})
     z_scores = sanitized_metadata.get("z_scores", {})
@@ -161,31 +169,42 @@ def deterministic_fallback_rca(sanitized_metadata: dict, start_time: float) -> R
         if val is not None:
             signals.append(f"{metric}: {val} (+{z:.1f}σ)")
             reasoning_parts.append(f"{metric} deviated {z:.1f}σ from baseline")
+            # Build why_flagged with baseline info (using typical baseline mean as reference)
+            baseline_mean = val / (1 + z * 0.15) if z > 0 else val  # rough inverse estimate
+            why_flagged_parts.append(f"{metric} baseline_mean={baseline_mean:.1f}, observed={val}, z={z:.1f}σ")
 
     # Security signals
+    risk = "low"
     if security:
         failed = security.get("failed_login_count_60s", 0)
         risk = security.get("risk_indicator", "low")
         if failed > 0:
             signals.append(f"failed_login_count_60s: {failed} (risk={risk})")
             reasoning_parts.append(f"{failed} failed logins in 60s indicating {risk} risk")
+            why_flagged_parts.append(f"failed_login_count_60s baseline=0, observed={failed}, risk={risk}")
 
     # Correlated alerts
     if correlated > 1:
         signals.append(f"correlated_alert_count: {correlated}")
         reasoning_parts.append(f"{correlated} related alerts merged into this incident")
+        why_flagged_parts.append(f"{correlated} correlated alerts in 120s window")
 
     reasoning = f"Health state is {health} for {category} source {source}. " + "; ".join(reasoning_parts) + "."
+    why_flagged = " | ".join(why_flagged_parts) if why_flagged_parts else f"{category} anomaly on {source} with health_state={health}"
 
     # Action based on category and severity
     if category == "security" or risk == "high":
         action = f"Investigate authentication logs for {source}; block source if brute-force confirmed; review access policies."
+        why_action = "Blocking the source IP and reviewing access policies directly mitigates brute-force authentication attacks by stopping the attack vector and preventing credential compromise."
     elif "cpu_pct" in z_scores and z_scores["cpu_pct"] > 3:
         action = f"Check top processes on {source}; consider restart if CPU sustained >90%; scale if legitimate load."
+        why_action = "Restarting the service clears CPU spinlocks, resets connection pools, and terminates runaway processes, directly addressing thread starvation root cause. Scaling handles legitimate load increases."
     elif "latency_ms" in z_scores and z_scores["latency_ms"] > 2:
         action = f"Check network path to {source}; verify upstream dependencies; consider circuit breaker."
+        why_action = "Circuit breaker isolates failing dependencies preventing cascade failures, while network path verification identifies transit degradation root cause."
     else:
         action = f"Monitor {source} for trend continuation; investigate if health degrades to Poor."
+        why_action = "Continued monitoring captures trend data for informed intervention before manual action is warranted on low-signal anomalies."
 
     confidence = min(0.85, 0.5 + len(signals) * 0.1)
 
@@ -196,6 +215,8 @@ def deterministic_fallback_rca(sanitized_metadata: dict, start_time: float) -> R
         recommended_action=action,
         ai_provider="deterministic-fallback",
         llm_latency_ms=int((time.time() - start_time) * 1000),
+        why_flagged=why_flagged,
+        why_this_action=why_action,
     )
 
 

@@ -37,6 +37,7 @@ from services.tier2_saas.aiops import (
     HealthState,
     Alert,
     Incident,
+    engine,
 )
 
 
@@ -277,7 +278,7 @@ class TestEndToEndSLA:
     @pytest.mark.asyncio
     async def test_zscore_detection_latency(self):
         """Layer 1 Z-score detection should be sub-5ms per payload."""
-        engine = HybridAIOpsEngine()
+        from services.tier2_saas.aiops import engine
 
         # Build baseline
         for i in range(20):
@@ -325,7 +326,7 @@ class TestEndToEndSLA:
     @pytest.mark.asyncio
     async def test_full_incident_creation_sla(self):
         """End-to-end: baseline + spike -> enriched Incident with RCA in < 5 seconds."""
-        engine = HybridAIOpsEngine()
+        from services.tier2_saas.aiops import engine
 
         # Build baseline for src_sla_test
         for i in range(15):
@@ -395,7 +396,7 @@ class TestEndToEndSLA:
     @pytest.mark.asyncio
     async def test_alert_correlation_120s_window(self):
         """Verify 120s sliding window merges related alerts into single incident."""
-        engine = HybridAIOpsEngine()
+        from services.tier2_saas.aiops import engine
 
         # Build baseline first (need 10+ samples for Z-score baseline to be ready)
         base_time = datetime(2026, 11, 20, 11, 50, 0, tzinfo=timezone.utc)
@@ -646,6 +647,271 @@ class TestHealthStateClassifier:
 # ─── Imports needed for tests ───
 
 from datetime import datetime, timezone
+
+
+# ─── Test 7: Explainable RCA Fields ───
+
+class TestExplainableRCAFields:
+    """Verify deterministic fallback populates why_flagged and why_this_action."""
+
+    def test_deterministic_fallback_includes_why_flagged(self):
+        """Deterministic fallback must include why_flagged with baseline vs observed."""
+        metadata = {
+            "source_id": "src_test",
+            "event_category": "infrastructure",
+            "health_state": "Poor",
+            "metrics": {"cpu_pct": 94.2, "mem_pct": 88.0},
+            "z_scores": {"cpu_pct": 3.6, "mem_pct": 2.9},
+            "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+            "correlated_alert_count": 2,
+        }
+
+        result = generate_explainable_rca_sync(metadata)
+
+        assert "why_flagged" in result, "why_flagged field missing"
+        assert "why_this_action" in result, "why_this_action field missing"
+        assert len(result["why_flagged"]) > 10, "why_flagged too short"
+        assert len(result["why_this_action"]) > 10, "why_this_action too short"
+        # Verify it contains baseline vs observed info
+        assert "cpu_pct" in result["why_flagged"] or "baseline" in result["why_flagged"].lower()
+        # Verify why_this_action explains the action
+        assert "restart" in result["why_this_action"].lower() or "scale" in result["why_this_action"].lower() or "monitor" in result["why_this_action"].lower()
+
+    def test_deterministic_fallback_security_why_fields(self):
+        """Security incident fallback includes why_flagged with failed login info."""
+        metadata = {
+            "source_id": "src_sec",
+            "event_category": "security",
+            "health_state": "Poor",
+            "metrics": {},
+            "z_scores": {},
+            "security_summary": {"failed_login_count_60s": 25, "risk_indicator": "high"},
+            "correlated_alert_count": 3,
+        }
+
+        result = generate_explainable_rca_sync(metadata)
+
+        assert "why_flagged" in result
+        assert "why_this_action" in result
+        assert "failed_login_count_60s" in result["why_flagged"] or "25" in result["why_flagged"]
+        assert "block" in result["why_this_action"].lower() or "mitigate" in result["why_this_action"].lower()
+
+    def test_rca_response_schema_includes_new_fields(self):
+        """RCAResponse model validates why_flagged and why_this_action."""
+        metadata = {
+            "source_id": "src_test",
+            "event_category": "infrastructure",
+            "health_state": "Poor",
+            "metrics": {"cpu_pct": 95.0},
+            "z_scores": {"cpu_pct": 4.0},
+            "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+            "correlated_alert_count": 1,
+        }
+
+        result = generate_explainable_rca_sync(metadata)
+        rca = RCAResponse(**result)
+
+        assert hasattr(rca, "why_flagged")
+        assert hasattr(rca, "why_this_action")
+        assert isinstance(rca.why_flagged, str)
+        assert isinstance(rca.why_this_action, str)
+
+
+# ─── Test 8: Policy-Gated Remediation & Rollback ───
+
+class TestPolicyGatedRemediation:
+    """Verify 4-stage safeguard lifecycle: Policy Check -> Approval -> Execution -> Rollback."""
+
+    @pytest.fixture
+    def client(self):
+        from fastapi.testclient import TestClient
+        from services.tier2_saas.main import app
+        return TestClient(app)
+
+    def test_remediation_rejected_without_approval(self, client):
+        """Policy check: reject when approved=false (default)."""
+        # First create an incident by ingesting anomaly
+        import asyncio
+        from services.tier2_saas.aiops import engine
+
+        async def create_incident():
+            eng = engine
+            for i in range(15):
+                await eng.process_metadata({
+                    "tenant_id": "tenant_rem", "source_id": "src_rem", "collector_id": "coll",
+                    "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:00:00.000Z",
+                    "source_timezone": "UTC", "event_category": "infrastructure", "severity": "info",
+                    "health_state": "Excellent", "metrics": {"cpu_pct": 40.0},
+                    "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                    "alert_context": "baseline", "collector_meta": {}
+                })
+            result = await eng.process_metadata({
+                "tenant_id": "tenant_rem", "source_id": "src_rem", "collector_id": "coll",
+                "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:10:00.000Z",
+                "source_timezone": "UTC", "event_category": "infrastructure", "severity": "warning",
+                "health_state": "Fair", "metrics": {"cpu_pct": 85.0},
+                "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                "alert_context": "cpu high", "collector_meta": {}
+            })
+            return result["new_incidents"][0]
+
+        incident_id = asyncio.run(create_incident())
+
+        # Try to approve WITHOUT approved=true
+        resp = client.post(
+            f"/api/v1/incidents/{incident_id}/remediate",
+            json={"action": "approve", "operator_id": "alice", "role": "Operator"},
+            headers={"Authorization": "Bearer test", "X-Tenant-ID": "tenant_rem"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "rejected"
+        assert data["policy_status"] == "rejected"
+        assert "approved=true" in data["message"].lower() or "explicit approval" in data["message"].lower()
+
+    def test_remediation_approved_with_explicit_approval(self, client):
+        """Approval: execute when approved=true."""
+        import asyncio
+        from services.tier2_saas.aiops import engine
+
+        async def create_incident():
+            eng = engine
+            for i in range(15):
+                await eng.process_metadata({
+                    "tenant_id": "tenant_rem2", "source_id": "src_rem2", "collector_id": "coll",
+                    "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:00:00.000Z",
+                    "source_timezone": "UTC", "event_category": "infrastructure", "severity": "info",
+                    "health_state": "Excellent", "metrics": {"cpu_pct": 40.0},
+                    "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                    "alert_context": "baseline", "collector_meta": {}
+                })
+            result = await eng.process_metadata({
+                "tenant_id": "tenant_rem2", "source_id": "src_rem2", "collector_id": "coll",
+                "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:10:00.000Z",
+                "source_timezone": "UTC", "event_category": "infrastructure", "severity": "warning",
+                "health_state": "Fair", "metrics": {"cpu_pct": 85.0},
+                "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                "alert_context": "cpu high", "collector_meta": {}
+            })
+            return result["new_incidents"][0]
+
+        incident_id = asyncio.run(create_incident())
+
+        # Approve WITH approved=true
+        resp = client.post(
+            f"/api/v1/incidents/{incident_id}/remediate",
+            json={"action": "approve", "operator_id": "bob", "role": "Operator", "approved": True},
+            headers={"Authorization": "Bearer test", "X-Tenant-ID": "tenant_rem2"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "approved"
+        assert data["policy_status"] == "approved"
+        assert data["approved_by"] == "bob"
+        assert "before_state" in data
+        assert "after_state" in data
+        assert "rollback_plan" in data
+        assert "why_flagged" in data
+        assert "why_this_action" in data
+        assert "audit_trail" in data
+        assert data["audit_trail"]["policy_status"] == "approved"
+
+    def test_rollback_reverts_to_before_state(self, client):
+        """Rollback: reverts to before_state and logs ROLLED_BACK."""
+        import asyncio
+        from services.tier2_saas.aiops import engine
+
+        async def create_incident():
+            eng = engine
+            for i in range(15):
+                await eng.process_metadata({
+                    "tenant_id": "tenant_rem3", "source_id": "src_rem3", "collector_id": "coll",
+                    "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:00:00.000Z",
+                    "source_timezone": "UTC", "event_category": "infrastructure", "severity": "info",
+                    "health_state": "Excellent", "metrics": {"cpu_pct": 40.0},
+                    "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                    "alert_context": "baseline", "collector_meta": {}
+                })
+            result = await eng.process_metadata({
+                "tenant_id": "tenant_rem3", "source_id": "src_rem3", "collector_id": "coll",
+                "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:10:00.000Z",
+                "source_timezone": "UTC", "event_category": "infrastructure", "severity": "warning",
+                "health_state": "Fair", "metrics": {"cpu_pct": 85.0},
+                "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                "alert_context": "cpu high", "collector_meta": {}
+            })
+            return result["new_incidents"][0]
+
+        incident_id = asyncio.run(create_incident())
+
+        # First approve
+        resp = client.post(
+            f"/api/v1/incidents/{incident_id}/remediate",
+            json={"action": "approve", "operator_id": "carol", "role": "Operator", "approved": True},
+            headers={"Authorization": "Bearer test", "X-Tenant-ID": "tenant_rem3"},
+        )
+        assert resp.status_code == 200
+        approve_data = resp.json()
+        assert approve_data["status"] == "approved"
+        before_state = approve_data["before_state"]
+
+        # Then rollback via dedicated endpoint
+        resp = client.post(
+            f"/api/v1/incidents/{incident_id}/rollback",
+            json={"action": "rollback", "operator_id": "carol", "role": "Operator"},
+            headers={"Authorization": "Bearer test", "X-Tenant-ID": "tenant_rem3"},
+        )
+        assert resp.status_code == 200
+        rollback_data = resp.json()
+        assert rollback_data["status"] == "rolled_back"
+        assert rollback_data["policy_status"] == "rolled_back"
+        assert "audit_trail" in rollback_data
+        assert rollback_data["audit_trail"]["policy_status"] == "rolled_back"
+        assert rollback_data["audit_trail"]["rolled_back_by"] == "carol"
+        # Verify before_state is preserved
+        assert "before_state" in rollback_data
+
+    def test_incidents_endpoint_returns_explainable_fields(self, client):
+        """GET /api/v1/incidents returns why_flagged and why_this_action."""
+        import asyncio
+        from services.tier2_saas.aiops import engine
+
+        async def create_incident():
+            eng = engine
+            for i in range(15):
+                await eng.process_metadata({
+                    "tenant_id": "tenant_rem4", "source_id": "src_rem4", "collector_id": "coll",
+                    "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:00:00.000Z",
+                    "source_timezone": "UTC", "event_category": "infrastructure", "severity": "info",
+                    "health_state": "Excellent", "metrics": {"cpu_pct": 40.0},
+                    "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                    "alert_context": "baseline", "collector_meta": {}
+                })
+            result = await eng.process_metadata({
+                "tenant_id": "tenant_rem4", "source_id": "src_rem4", "collector_id": "coll",
+                "region_id": "us-east-1", "event_timestamp_utc": "2026-11-20T12:10:00.000Z",
+                "source_timezone": "UTC", "event_category": "infrastructure", "severity": "warning",
+                "health_state": "Fair", "metrics": {"cpu_pct": 85.0},
+                "security_summary": {"failed_login_count_60s": 0, "risk_indicator": "low"},
+                "alert_context": "cpu high", "collector_meta": {}
+            })
+            return result["new_incidents"][0]
+
+        incident_id = asyncio.run(create_incident())
+
+        # Fetch incidents
+        resp = client.get(
+            "/api/v1/incidents",
+            headers={"Authorization": "Bearer test", "X-Tenant-ID": "tenant_rem4"},
+        )
+        assert resp.status_code == 200
+        incidents = resp.json()
+        assert len(incidents) >= 1
+        inc = next(i for i in incidents if i["incident_id"] == incident_id)
+        assert "why_flagged" in inc
+        assert "why_this_action" in inc
+        assert len(inc["why_flagged"]) > 0
+        assert len(inc["why_this_action"]) > 0
 
 
 if __name__ == "__main__":

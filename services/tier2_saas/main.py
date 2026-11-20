@@ -251,6 +251,8 @@ class SimulateOutagePayload(BaseModel):
 class IncidentRemediatePayload(BaseModel):
     action: Literal["approve", "rollback"]
     operator_id: str
+    approved: bool = Field(default=False, description="Explicit approval required for execution")
+    role: str = Field(default="Operator", description="Operator role for RBAC check")
 
 
 class TelemetryResponse(BaseModel):
@@ -290,6 +292,10 @@ class IncidentResponse(BaseModel):
     metrics_snapshot: dict
     security_summary: dict | None
     aoim_triage: dict | None = None
+    suppressed_duplicate_count: int = 0
+    affected_components: list[str] = []
+    why_flagged: str = ""
+    why_this_action: str = ""
 
 
 class CollectorHealthResponse(BaseModel):
@@ -499,29 +505,45 @@ async def remediate_incident(
     tenant_id: str = Depends(verify_tenant_auth),
     db: Session = Depends(get_db),
 ):
-    """Safe remediation simulation (Stage 5 preview)."""
+    """
+    Policy-Gated Remediation with 4-Stage Safeguard Lifecycle:
+    1. Policy Check: Validate action against safe simulation policies
+    2. Approval: Require explicit approved=True and operator identity
+    3. Simulated Execution: Execute safely, record before/after state
+    4. Returns audit_trail, rollback_plan, why_flagged, why_this_action
+    """
     incident = get_incident(tenant_id, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
 
-    if payload.action == "approve":
-        # Policy check (simplified)
-        if incident["severity"] == "critical":
-            # Require dual approval for critical
-            audit_log.append(
-                tenant_id=tenant_id,
-                user_id=payload.operator_id,
-                role=Role.OPERATOR.value,
-                action="remediation_approval_pending_dual",
-                details={"incident_id": incident_id},
-            )
-            return {
-                "status": "pending_dual_approval",
-                "message": "Critical severity requires second operator approval",
-                "incident_id": incident_id,
-            }
+    # Use the remediation orchestrator for full policy-gated lifecycle
+    result = remediation_orchestrator.execute_remediation(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        operator_id=payload.operator_id,
+        role=payload.role,
+        action=payload.action,
+        severity=incident.get("severity", "warning"),
+        approved=payload.approved,
+        incident_data=incident,
+    )
 
-        # Record approval
+    # Include explainable RCA fields in response
+    result.update({
+        "why_flagged": incident.get("why_flagged", "Baseline vs observed metric deviation detected"),
+        "why_this_action": incident.get("why_this_action", "Action addresses detected root cause"),
+        "audit_trail": {
+            "audit_index": result.get("audit_index"),
+            "audit_hash": result.get("audit_hash"),
+            "timestamp_utc": result.get("timestamp_utc"),
+            "policy_status": result.get("policy_status"),
+            "approved_by": result.get("approved_by"),
+        },
+        "rollback_plan": result.get("rollback_plan"),
+    })
+
+    # Update incident status in DB if approved
+    if payload.action == "approve" and result.get("status") == "approved":
         with SessionLocal() as db2:
             record = db2.query(IncidentRecord).filter(
                 IncidentRecord.incident_id == incident_id,
@@ -531,41 +553,52 @@ async def remediate_incident(
                 record.status = "acknowledged"
                 db2.commit()
 
-        # Log to tamper-evident audit trail with cryptographic signature
-        audit_rec = audit_log.append(
-            tenant_id=tenant_id,
-            user_id=payload.operator_id,
-            role=Role.OPERATOR.value,
-            action="remediation_approve",
-            details={"incident_id": incident_id},
-        )
+    return result
 
-        return {
-            "status": "approved",
-            "action": "simulated_remediation",
-            "incident_id": incident_id,
-            "operator_id": payload.operator_id,
-            "rollback_token": f"rb_{incident_id}_{int(time.time())}",
-            "audit_hash": audit_rec.record_hash,
-            "message": "Remediation simulated - no actual execution in hackathon mode",
-        }
 
-    elif payload.action == "rollback":
-        audit_rec = audit_log.append(
-            tenant_id=tenant_id,
-            user_id=payload.operator_id,
-            role=Role.OPERATOR.value,
-            action="remediation_rollback",
-            details={"incident_id": incident_id},
-        )
-        return {
-            "status": "rolled_back",
-            "incident_id": incident_id,
-            "audit_hash": audit_rec.record_hash,
-            "message": "Rollback simulated - no actual execution",
-        }
+@app.post("/api/v1/incidents/{incident_id}/rollback", response_model=dict)
+async def rollback_incident(
+    incident_id: str,
+    payload: IncidentRemediatePayload,
+    tenant_id: str = Depends(verify_tenant_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    One-Click Rollback Endpoint:
+    Reverts simulated remediation state to before_state and logs ROLLED_BACK audit record.
+    """
+    incident = get_incident(tenant_id, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
 
-    raise HTTPException(status_code=400, detail="Invalid action")
+    # Force rollback action regardless of payload.action
+    result = remediation_orchestrator.execute_remediation(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        operator_id=payload.operator_id,
+        role=payload.role,
+        action="rollback",
+        severity=incident.get("severity", "warning"),
+        approved=True,  # Rollback always approved
+        incident_data=incident,
+    )
+
+    # Include explainable fields
+    result.update({
+        "why_flagged": incident.get("why_flagged", "Baseline vs observed metric deviation detected"),
+        "why_this_action": incident.get("why_this_action", "Rollback reverts to pre-remediation state"),
+        "audit_trail": {
+            "audit_index": result.get("audit_index"),
+            "audit_hash": result.get("audit_hash"),
+            "timestamp_utc": result.get("timestamp_utc"),
+            "policy_status": result.get("policy_status"),
+            "approved_by": result.get("approved_by"),
+            "rolled_back_by": payload.operator_id,
+        },
+        "rollback_plan": result.get("rollback_plan"),
+    })
+
+    return result
 
 
 @app.get("/api/v1/sla/metrics", response_model=SlaMetricsResponse)
@@ -657,6 +690,10 @@ def _incident_to_dict(incident: Incident) -> dict:
         "z_scores": incident.z_scores,
         "metrics_snapshot": incident.metrics_snapshot,
         "security_summary": incident.security_summary,
+        "suppressed_duplicate_count": getattr(incident, 'suppressed_duplicate_count', 0),
+        "affected_components": getattr(incident, 'affected_components', []),
+        "why_flagged": getattr(incident, 'why_flagged', ''),
+        "why_this_action": getattr(incident, 'why_this_action', ''),
     }
 
 

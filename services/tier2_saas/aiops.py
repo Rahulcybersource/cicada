@@ -22,11 +22,34 @@ from .multivariate_detector import MultivariateResidualDetector
 from .aoim_triage import aoim_engine
 
 # ─── Configuration ───
-Z_SCORE_THRESHOLD = 2.5
-ROLLING_WINDOW_SECONDS = 300  # 5 minutes
-HEARTBEAT_TIMEOUT_SECONDS = 60
-CORRELATION_WINDOW_SECONDS = 120
-MAX_INCIDENTS_PER_TENANT = 1000
+import os
+
+def _parse_thresholds(env_var: str, default: dict) -> dict:
+    """Parse threshold configuration from environment variable (JSON format)."""
+    import json
+    raw = os.getenv(env_var)
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+    return default
+
+Z_SCORE_THRESHOLD = float(os.getenv("Z_SCORE_THRESHOLD", "2.5"))
+ROLLING_WINDOW_SECONDS = int(os.getenv("ROLLING_WINDOW_SECONDS", "300"))
+HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "60"))
+CORRELATION_WINDOW_SECONDS = int(os.getenv("CORRELATION_WINDOW_SECONDS", "120"))
+MAX_INCIDENTS_PER_TENANT = int(os.getenv("MAX_INCIDENTS_PER_TENANT", "1000"))
+
+# Health state classification thresholds (configurable via env)
+HEALTH_THRESHOLDS = _parse_thresholds("HEALTH_THRESHOLDS", {
+    "cpu_pct": {"excellent": 50, "good": 70, "fair": 85},
+    "mem_pct": {"excellent": 60, "good": 80, "fair": 90},
+    "disk_pct": {"excellent": 50, "good": 75, "fair": 90},
+    "latency_ms": {"excellent": 50, "good": 100, "fair": 300},
+    "packet_loss_pct": {"excellent": 0.1, "good": 1, "fair": 5},
+    "bandwidth_mbps": {},  # No upper threshold
+})
 
 
 class HealthState(str, Enum):
@@ -136,6 +159,12 @@ class Incident:
     metrics_snapshot: dict[str, float] = field(default_factory=dict)
     security_summary: dict | None = None
     aoim_triage: dict | None = None
+    # Noise reduction tracking
+    suppressed_duplicate_count: int = 0
+    affected_components: list[str] = field(default_factory=list)
+    # Explainable AIOps fields
+    why_flagged: str = ""
+    why_this_action: str = ""
 
 
 @dataclass
@@ -249,6 +278,7 @@ class AlertCorrelator:
     """
     120-second sliding window alert correlation.
     Merges related alerts for same tenant+source into single Incident.
+    Tracks noise reduction metrics (suppressed duplicates).
     """
 
     def __init__(self):
@@ -276,21 +306,39 @@ class AlertCorrelator:
             and (a.event_category == alert.event_category or self._categories_related(a.event_category, alert.event_category))
         ]
 
-        if related_alerts:
-            # Check if any related alert belongs to an existing incident
-            for related_alert in related_alerts:
-                existing_incident = self._find_incident_for_alert(related_alert, alert.tenant_id)
-                if existing_incident:
-                    return self._merge_alert_into_incident(existing_incident, alert, [related_alert])
+        # Check if any related alert belongs to an existing incident
+        existing_incident = None
+        for related_alert in related_alerts:
+            existing_incident = self._find_incident_for_alert(related_alert, alert.tenant_id)
+            if existing_incident:
+                break
+
+        if existing_incident:
+            # Check if this alert is a duplicate of an already-correlated alert (noise reduction)
+            duplicate = self._find_duplicate_alert(alert, related_alerts)
+            if duplicate and duplicate.correlated:
+                # Track suppressed duplicate for noise reduction metrics
+                existing_incident.suppressed_duplicate_count += 1
+                return existing_incident
+            # Not a duplicate - merge into existing incident
+            return self._merge_alert_into_incident(existing_incident, alert, related_alerts)
+
+        # Check for duplicate among related alerts (no incident yet but duplicate alert received)
+        duplicate = self._find_duplicate_alert(alert, related_alerts)
+        if duplicate:
+            # This shouldn't happen often, but handle gracefully
+            pass
 
         # Create new incident
         return self._create_incident(alert)
 
     def _categories_related(self, cat1: EventCategory, cat2: EventCategory) -> bool:
-        """Check if two categories should be correlated."""
+        """Check if two categories should be correlated.
+        Infrastructure and Network are related (latency rise + packet loss + service degradation).
+        Security signals correlate with each other."""
         related_groups = [
             {EventCategory.INFRASTRUCTURE, EventCategory.NETWORK},
-            {EventCategory.SECURITY},  # Security stands alone
+            {EventCategory.SECURITY},
             {EventCategory.HEARTBEAT},
         ]
         for group in related_groups:
@@ -299,15 +347,29 @@ class AlertCorrelator:
         return False
 
     def _find_incident_for_alert(self, alert: Alert, tenant_id: str) -> Incident | None:
-        """Find incident that contains this alert."""
+        """Find incident that contains this alert (by source and category)."""
         for incident in self.incidents[tenant_id].values():
-            # Simple heuristic: same source and category
-            if incident.source_id == alert.source_id and incident.event_category == alert.event_category:
+            if incident.source_id == alert.source_id and (
+                incident.event_category == alert.event_category or
+                self._categories_related(incident.event_category, alert.event_category)
+            ):
                 return incident
+        return None
+
+    def _find_duplicate_alert(self, alert: Alert, related_alerts: list[Alert]) -> Alert | None:
+        """Check if this alert is a duplicate of an existing one (same metric, similar z-score)."""
+        for existing in related_alerts:
+            if (existing.metric_name == alert.metric_name and
+                abs(existing.z_score - alert.z_score) < 0.5 and
+                existing.correlated):
+                return existing
         return None
 
     def _create_incident(self, alert: Alert) -> Incident:
         """Create new incident from single alert."""
+        # Determine affected components from metric name
+        affected = self._infer_affected_components(alert.metric_name)
+
         incident = Incident(
             incident_id=str(uuid.uuid4())[:12],
             tenant_id=alert.tenant_id,
@@ -326,11 +388,30 @@ class AlertCorrelator:
             llm_latency_ms=0,
             z_scores={alert.metric_name: alert.z_score},
             metrics_snapshot={alert.metric_name: alert.metric_value},
+            affected_components=affected,
         )
         alert.correlated = True
         self.recent_alerts[alert.tenant_id].append(alert)
         self.incidents[alert.tenant_id][incident.incident_id] = incident
         return incident
+
+    def _infer_affected_components(self, metric_name: str) -> list[str]:
+        """Infer affected system components from metric name."""
+        component_map = {
+            "cpu_pct": ["cpu"],
+            "mem_pct": ["memory"],
+            "disk_pct": ["disk"],
+            "latency_ms": ["network", "application"],
+            "packet_loss_pct": ["network"],
+            "bandwidth_mbps": ["network"],
+            "request_rate": ["application"],
+            "error_rate": ["application"],
+            "failed_login_count_60s": ["auth", "security"],
+        }
+        for key, comps in component_map.items():
+            if key in metric_name.lower():
+                return comps
+        return ["unknown"]
 
     def _merge_alert_into_incident(
         self,
@@ -349,6 +430,12 @@ class AlertCorrelator:
         incident.contributing_signals.append(f"{new_alert.metric_name}: {new_alert.metric_value} (z={new_alert.z_score:.1f})")
         incident.z_scores[new_alert.metric_name] = new_alert.z_score
         incident.metrics_snapshot[new_alert.metric_name] = new_alert.metric_value
+
+        # Update affected components
+        new_components = self._infer_affected_components(new_alert.metric_name)
+        for comp in new_components:
+            if comp not in incident.affected_components:
+                incident.affected_components.append(comp)
 
         # Mark alerts as correlated
         for a in correlated_alerts:
@@ -369,23 +456,33 @@ class AlertCorrelator:
     def get_incident(self, tenant_id: str, incident_id: str) -> Incident | None:
         return self.incidents[tenant_id].get(incident_id)
 
+    def get_noise_reduction_stats(self, tenant_id: str) -> dict:
+        """Get noise reduction statistics for tenant."""
+        total_alerts = 0
+        total_suppressed = 0
+        for incident in self.incidents[tenant_id].values():
+            total_alerts += incident.alert_count
+            total_suppressed += incident.suppressed_duplicate_count
+        return {
+            "total_alerts_processed": total_alerts,
+            "suppressed_duplicates": total_suppressed,
+            "noise_reduction_ratio": total_suppressed / max(1, total_alerts + total_suppressed),
+        }
+
 
 # ─── Health State Classifier ───
 
 class HealthStateClassifier:
     """4-state health classification with configurable thresholds."""
 
-    DEFAULT_THRESHOLDS = {
-        "cpu_pct": {"excellent": 50, "good": 70, "fair": 85},
-        "mem_pct": {"excellent": 60, "good": 80, "fair": 90},
-        "disk_pct": {"excellent": 50, "good": 75, "fair": 90},
-        "latency_ms": {"excellent": 50, "good": 100, "fair": 300},
-        "packet_loss_pct": {"excellent": 0.1, "good": 1, "fair": 5},
-        "bandwidth_mbps": {},  # No upper threshold
-    }
+    DEFAULT_THRESHOLDS = HEALTH_THRESHOLDS
 
     def __init__(self, custom_thresholds: dict | None = None):
         self.thresholds = custom_thresholds or self.DEFAULT_THRESHOLDS
+
+    def update_thresholds(self, new_thresholds: dict) -> None:
+        """Update thresholds at runtime (e.g., via config API)."""
+        self.thresholds = new_thresholds
 
     def classify(self, metrics: dict[str, float], event_category: EventCategory) -> tuple[HealthState, str]:
         """Classify health state from metrics, return (state, reason)."""
@@ -609,13 +706,15 @@ class HybridAIOpsEngine:
             # Call LLM with timeout handled inside
             rca_result = await generate_explainable_rca(rca_metadata)
 
-            # Update incident with RCA
+            # Update incident with RCA (including explainable fields)
             incident.reasoning_path = rca_result["reasoning_path"]
             incident.contributing_signals = rca_result["contributing_signals"]
             incident.confidence = rca_result["confidence"]
             incident.recommended_action = rca_result["recommended_action"]
             incident.ai_provider = rca_result["ai_provider"]
             incident.llm_latency_ms = rca_result["llm_latency_ms"]
+            incident.why_flagged = rca_result.get("why_flagged", "Baseline vs observed metric deviation detected")
+            incident.why_this_action = rca_result.get("why_this_action", "Action addresses detected root cause")
 
             # Evaluate AOIM adaptive triage
             triage = aoim_engine.evaluate_incident(
@@ -755,4 +854,8 @@ def _incident_to_dict(incident: Incident) -> dict:
         "metrics_snapshot": incident.metrics_snapshot,
         "security_summary": incident.security_summary,
         "aoim_triage": incident.aoim_triage,
+        "suppressed_duplicate_count": incident.suppressed_duplicate_count,
+        "affected_components": incident.affected_components,
+        "why_flagged": incident.why_flagged,
+        "why_this_action": incident.why_this_action,
     }

@@ -146,6 +146,10 @@ def drop_db() -> None:
     Base.metadata.drop_all(bind=engine)
 
 
+# Ensure tables are created at module import for tests and direct imports
+init_db()
+
+
 # ─── Session Management ───
 
 @contextmanager
