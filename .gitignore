@@ -19,9 +19,11 @@ papers/
 *.db-shm
 *.db-wal
 
-# Encryption keys
+# Encryption keys & TLS certificates
 .tier1_encryption_key
 *.key
+*.pem
+certs/
 
 # Python
 __pycache__/
