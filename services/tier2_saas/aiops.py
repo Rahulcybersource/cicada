@@ -645,9 +645,9 @@ class HybridAIOpsEngine:
         collector = self.watchdog.register_heartbeat(
             collector_id=metadata["collector_id"],
             tenant_id=metadata["tenant_id"],
-            version=metadata.get("collector_meta", {}).get("version", "unknown"),
-            collector_cpu_pct=metadata.get("collector_meta", {}).get("collector_cpu_pct", 0.0),
-            collector_mem_mb=metadata.get("collector_meta", {}).get("collector_mem_mb", 0.0),
+            version=metadata.get("version", metadata.get("collector_meta", {}).get("version", "unknown")),
+            collector_cpu_pct=metadata.get("collector_cpu_pct", metadata.get("collector_meta", {}).get("collector_cpu_pct", 0.0)),
+            collector_mem_mb=metadata.get("collector_mem_mb", metadata.get("collector_meta", {}).get("collector_mem_mb", 0.0)),
         )
         return collector
 

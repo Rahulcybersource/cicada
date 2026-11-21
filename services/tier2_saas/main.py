@@ -6,6 +6,7 @@ Multi-tenant metadata ingestion, AIOps processing, real-time SSE streaming.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -17,7 +18,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy.orm import Session
 
 from .aiops import (
@@ -32,22 +33,40 @@ from .aiops import (
     process_ingest_payload,
 )
 from .db import (
+    AuditLogRecord,
+    CollectorToken,
     IncidentRecord,
+    PolicyThresholds,
+    RemediationRecord,
     SessionLocal,
+    StateTransitionRecord,
     TelemetryMetadata,
+    append_audit_log,
+    get_latest_sla_metrics,
+    get_policy_thresholds,
     init_db,
+    init_default_thresholds,
     insert_telemetry,
+    query_audit_log,
     query_incidents,
     query_telemetry,
     query_collectors,
+    query_remediation_records,
+    query_state_transitions,
     record_sla_metric,
+    record_state_transition,
     upsert_collector,
     upsert_incident,
+    update_policy_threshold,
+    validate_collector_token,
     validate_regional_residency,
+    verify_audit_chain,
+    check_collector_timeouts_and_persist,
+    record_remediation,
 )
 from .adaptive_watermark import watermark_sorter
 from .remediation import remediation_orchestrator
-from .auth_rbac import Role, audit_log
+from .auth_rbac import Role, audit_log as rbac_audit_log
 from .watchdog_modules.resolver import router as resolver_router
 from .watchdog_modules.watchdog_config import router as watchdog_config_router
 from .watchdog_modules.notifier import router as notifier_router
@@ -59,6 +78,10 @@ from .watchdog_modules.gatekeeper import router as gatekeeper_router
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     init_db()
+    # Initialize default thresholds for known tenants
+    with SessionLocal() as db:
+        for tenant in ["tenant_acme_corp", "tenant_globex_ind", "tenant_demo"]:
+            init_default_thresholds(db, tenant)
     # Start background tasks
     watchdog_task = asyncio.create_task(heartbeat_watchdog_loop())
     sla_task = asyncio.create_task(sla_measurement_loop())
@@ -80,10 +103,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS for Next.js frontend (allow * for 4-laptop LAN hotspot demo)
+# CORS for Next.js frontend (allows localhost:3000, 10.30.165.15:3000, and LAN hotspot demo)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "*",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://10.30.165.15:3000",
+        "https://10.30.165.15:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,20 +136,65 @@ def get_db():
 DbSession = Annotated[Session, Depends(get_db)]
 
 
-async def verify_tenant_auth(
+async def verify_collector_auth(
     authorization: Annotated[str | None, Header()] = None,
     x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-ID")] = None,
     token: Annotated[str | None, Query()] = None,
     tenant_id: Annotated[str | None, Query()] = None,
 ) -> str:
-    """Verify collector authentication and return tenant_id (supports headers or query params for SSE)."""
+    """
+    Verify collector authentication using Bearer token mapped to tenant_id.
+    Returns tenant_id on success.
+    Raises 401 for invalid/missing token, 403 for tenant/region mismatch.
+    """
     auth = authorization or (f"Bearer {token}" if token else None)
     tid = x_tenant_id or tenant_id
+
     if not auth or not auth.startswith("Bearer "):
+        # Log rejected auth attempt
+        with SessionLocal() as db:
+            append_audit_log(db, tid or "unknown", "unknown", "unknown", "auth_reject", {
+                "reason": "missing_or_invalid_authorization_header",
+                "provided_tenant": tid,
+            })
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
     if not tid:
+        with SessionLocal() as db:
+            append_audit_log(db, "unknown", "unknown", "unknown", "auth_reject", {
+                "reason": "missing_x_tenant_id_header",
+            })
         raise HTTPException(status_code=401, detail="Missing X-Tenant-ID header")
-    # In production: validate token against collector registry
+
+    # Extract token
+    bearer_token = auth[7:]  # Remove "Bearer " prefix
+
+    # Validate token against database
+    with SessionLocal() as db:
+        token_record = validate_collector_token(db, bearer_token)
+
+        if not token_record:
+            append_audit_log(db, tid, "unknown", "unknown", "auth_reject", {
+                "reason": "invalid_token",
+                "provided_tenant": tid,
+            })
+            raise HTTPException(status_code=401, detail="Invalid or revoked token")
+
+        # Verify tenant matches token's tenant
+        if token_record.tenant_id != tid:
+            append_audit_log(db, tid, "unknown", "unknown", "auth_reject", {
+                "reason": "tenant_mismatch",
+                "token_tenant": token_record.tenant_id,
+                "provided_tenant": tid,
+            })
+            raise HTTPException(status_code=403, detail="Token does not belong to provided tenant")
+
+        # Log successful auth
+        append_audit_log(db, tid, token_record.collector_id, "collector", "auth_accept", {
+            "collector_id": token_record.collector_id,
+            "region_id": token_record.region_id,
+        })
+
     return tid
 
 
@@ -131,23 +205,7 @@ async def heartbeat_watchdog_loop():
     while True:
         try:
             await asyncio.sleep(5)
-            changed = aio_ops_engine.check_collector_timeouts()
-            if changed:
-                for collector in changed:
-                    # Persist to DB
-                    with SessionLocal() as db:
-                        upsert_collector(db, {
-                            "collector_id": collector.collector_id,
-                            "tenant_id": collector.tenant_id,
-                            "region_id": "ap-south-1",  # Would come from registry
-                            "version": collector.version,
-                            "collector_cpu_pct": collector.collector_cpu_pct,
-                            "collector_mem_mb": collector.collector_mem_mb,
-                            "health_state": collector.health_state.value,
-                            "last_heartbeat_utc": collector.last_heartbeat,
-                            "state_reason": collector.state_reason,
-                            "state_transitions": collector.state_transitions,
-                        })
+            check_collector_timeouts_and_persist()
         except asyncio.CancelledError:
             break
         except Exception:
@@ -235,6 +293,17 @@ class IngestPayload(BaseModel):
     alert_context: str | None = None
     collector_meta: dict = Field(default_factory=dict)
 
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def validate_metrics(cls, v: dict) -> dict:
+        """Forbid sensitive fields in metrics."""
+        if isinstance(v, dict):
+            forbidden = {"password", "secret", "token", "api_key", "apikey", "passwd", "pwd"}
+            for key in v:
+                if key.lower() in forbidden:
+                    raise ValueError(f"Forbidden field in metrics: {key}")
+        return v
+
 
 class HeartbeatPayload(BaseModel):
     collector_id: str
@@ -242,6 +311,7 @@ class HeartbeatPayload(BaseModel):
     version: str = "unknown"
     collector_cpu_pct: float = 0.0
     collector_mem_mb: float = 0.0
+    collector_meta: dict = Field(default_factory=dict)
 
 
 class SimulateOutagePayload(BaseModel):
@@ -316,13 +386,75 @@ class SlaMetricsResponse(BaseModel):
     is_recovery_burst: bool = False
 
 
+# New response models for Phase 2/3/4
+class AuditLogResponse(BaseModel):
+    chain_valid: bool
+    verification_message: str
+    total_records: int
+    records: list[dict]
+
+
+class StateTransitionResponse(BaseModel):
+    tenant_id: str
+    collector_id: str
+    from_state: str
+    to_state: str
+    reason: str
+    timestamp_utc: str
+    record_hash: str
+
+
+class PolicyThresholdsResponse(BaseModel):
+    tenant_id: str
+    thresholds: dict[str, dict[str, float]]
+
+
+class UpdateThresholdRequest(BaseModel):
+    metric_name: str
+    excellent_max: float
+    good_max: float
+    fair_max: float
+
+
+class RemediationApproveRequest(BaseModel):
+    operator_id: str
+    operator_role: str = "Operator"
+
+
+class RemediationRollbackRequest(BaseModel):
+    operator_id: str
+    operator_role: str = "Operator"
+
+
+class RemediationResponse(BaseModel):
+    status: str
+    incident_id: str
+    operator_id: str
+    action: str
+    rollback_token: str | None = None
+    command_signature: str | None = None
+    audit_hash: str | None = None
+    message: str
+
+
+class SlaMetricsLiveResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    p95_ingest_latency_ms: float | None = None
+    p95_breach_to_alert_ms: float | None = None
+    offline_detection_time_s: float | None = None
+    received_count: int = 0
+    duplicate_count: int = 0
+    status: str = "awaiting_live_data"
+
+
 # ─── API Endpoints ───
 
 @app.post("/api/v1/ingest/{region_id}", response_model=dict)
 async def ingest_metadata(
     region_id: str,
     payload: IngestPayload,
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
     db: Session = Depends(get_db),
 ):
     """
@@ -332,10 +464,22 @@ async def ingest_metadata(
     """
     # Verify tenant matches auth
     if payload.tenant_id != tenant_id:
+        with SessionLocal() as audit_db:
+            append_audit_log(audit_db, tenant_id, payload.collector_id, "collector", "ingest_reject", {
+                "reason": "tenant_id_mismatch",
+                "payload_tenant": payload.tenant_id,
+                "auth_tenant": tenant_id,
+            })
         raise HTTPException(status_code=403, detail="Tenant ID mismatch")
 
     # Validate regional residency
     if not validate_regional_residency(tenant_id, region_id):
+        with SessionLocal() as audit_db:
+            append_audit_log(audit_db, tenant_id, payload.collector_id, "collector", "ingest_reject", {
+                "reason": "regional_residency_violation",
+                "region_id": region_id,
+                "expected_region": "ap-south-1" if tenant_id == "tenant_acme_corp" else "eu-central-1" if tenant_id == "tenant_globex_ind" else "us-east-1",
+            })
         raise HTTPException(status_code=403, detail=f"Tenant {tenant_id} not authorized for region {region_id}")
 
     # Idempotent insert
@@ -385,8 +529,18 @@ async def ingest_metadata(
             if inc:
                 await sse_manager.broadcast(tenant_id, "incident", _incident_to_dict(inc))
 
+    # Log ingest decision
+    with SessionLocal() as audit_db:
+        append_audit_log(audit_db, tenant_id, payload.collector_id, "collector", "ingest_accept", {
+            "payload_id": payload_id,
+            "is_duplicate": is_duplicate,
+            "ingest_latency_ms": ingest_latency_ms,
+            "anomalies_detected": result.get("anomalies_detected", 0),
+            "new_incidents": result.get("new_incidents", []),
+        })
+
     return {
-        "status": "accepted" if not is_duplicate else "duplicated",
+        "status": "accepted" if not is_duplicate else "duplicate_ignored",
         "payload_id": payload_id,
         "ingest_latency_ms": ingest_latency_ms,
         "anomalies_detected": result.get("anomalies_detected", 0),
@@ -397,13 +551,20 @@ async def ingest_metadata(
 @app.post("/api/v1/heartbeat", response_model=dict)
 async def collector_heartbeat(
     payload: HeartbeatPayload,
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
 ):
     """Process collector heartbeat."""
     if payload.tenant_id != tenant_id:
+        with SessionLocal() as audit_db:
+            append_audit_log(audit_db, tenant_id, payload.collector_id, "collector", "heartbeat_reject", {
+                "reason": "tenant_id_mismatch",
+            })
         raise HTTPException(status_code=403, detail="Tenant ID mismatch")
 
-    result = await process_heartbeat(payload.model_dump())
+    # Include version and collector_meta in the payload for process_heartbeat
+    heartbeat_data = payload.model_dump()
+
+    result = await process_heartbeat(heartbeat_data)
 
     # Persist collector state
     with SessionLocal() as db:
@@ -425,7 +586,7 @@ async def collector_heartbeat(
 
 @app.get("/api/v1/telemetry", response_model=list[TelemetryResponse])
 async def get_telemetry(
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
     db: Session = Depends(get_db),
     source_id: str | None = Query(None),
     event_category: str | None = Query(None),
@@ -459,7 +620,7 @@ async def get_telemetry(
 
 @app.get("/api/v1/fleet/health", response_model=list[CollectorHealthResponse])
 async def fleet_health(
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
     db: Session = Depends(get_db),
 ):
     """Get collector fleet status and 4-state health breakdown."""
@@ -467,9 +628,32 @@ async def fleet_health(
     return [CollectorHealthResponse(**c) for c in collectors]
 
 
+@app.get("/api/v1/fleet/transitions", response_model=list[StateTransitionResponse])
+async def fleet_transitions(
+    tenant_id: str = Depends(verify_collector_auth),
+    db: Session = Depends(get_db),
+    collector_id: str | None = Query(None),
+    limit: int = Query(100, le=500),
+):
+    """Get collector health state transition history with UTC timestamps."""
+    transitions = query_state_transitions(db, tenant_id, collector_id, limit)
+    return [
+        StateTransitionResponse(
+            tenant_id=t.tenant_id,
+            collector_id=t.collector_id,
+            from_state=t.from_state,
+            to_state=t.to_state,
+            reason=t.reason,
+            timestamp_utc=t.timestamp_utc.isoformat(),
+            record_hash=t.record_hash,
+        )
+        for t in transitions
+    ]
+
+
 @app.get("/api/v1/incidents", response_model=list[IncidentResponse])
 async def list_incidents(
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
     db: Session = Depends(get_db),
     limit: int = Query(100, le=500),
     status: str | None = Query(None),
@@ -482,7 +666,7 @@ async def list_incidents(
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentResponse)
 async def get_incident_detail(
     incident_id: str,
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
     db: Session = Depends(get_db),
 ):
     """Get single incident detail."""
@@ -492,96 +676,329 @@ async def get_incident_detail(
     return IncidentResponse(**incident)
 
 
-@app.post("/api/v1/incidents/{incident_id}/remediate", response_model=dict)
-async def remediate_incident(
+@app.post("/api/v1/remediation/{incident_id}/approve", response_model=RemediationResponse)
+async def approve_remediation(
     incident_id: str,
-    payload: IncidentRemediatePayload,
-    tenant_id: str = Depends(verify_tenant_auth),
+    payload: RemediationApproveRequest,
+    tenant_id: str = Depends(verify_collector_auth),
     db: Session = Depends(get_db),
 ):
-    """Safe remediation simulation (Stage 5 preview)."""
+    """Approve remediation with policy checks and audit trail."""
+    # Check both engine's correlator and DB for incident
     incident = get_incident(tenant_id, incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-
-    if payload.action == "approve":
-        # Policy check (simplified)
-        if incident["severity"] == "critical":
-            # Require dual approval for critical
-            audit_log.append(
-                tenant_id=tenant_id,
-                user_id=payload.operator_id,
-                role=Role.OPERATOR.value,
-                action="remediation_approval_pending_dual",
-                details={"incident_id": incident_id},
-            )
-            return {
-                "status": "pending_dual_approval",
-                "message": "Critical severity requires second operator approval",
-                "incident_id": incident_id,
-            }
-
-        # Record approval
+        # Check DB
         with SessionLocal() as db2:
             record = db2.query(IncidentRecord).filter(
                 IncidentRecord.incident_id == incident_id,
                 IncidentRecord.tenant_id == tenant_id,
             ).first()
             if record:
-                record.status = "acknowledged"
-                db2.commit()
+                # Convert DB record to engine incident format
+                incident = _incident_record_to_dict(record)
+            else:
+                raise HTTPException(status_code=404, detail="Incident not found")
 
-        # Log to tamper-evident audit trail with cryptographic signature
-        audit_rec = audit_log.append(
-            tenant_id=tenant_id,
-            user_id=payload.operator_id,
-            role=Role.OPERATOR.value,
-            action="remediation_approve",
-            details={"incident_id": incident_id},
+    # Policy check - critical requires dual approval
+    if incident["severity"] == "critical" and payload.operator_role != Role.ADMINISTRATOR.value:
+        # Check if this is the first approval
+        with SessionLocal() as audit_db:
+            recent = audit_db.execute(
+                audit_db.query(RemediationRecord).where(
+                    RemediationRecord.incident_id == incident_id,
+                    RemediationRecord.tenant_id == tenant_id,
+                    RemediationRecord.action == "approve",
+                    RemediationRecord.status == "pending_dual",
+                )
+            ).scalar_one_or_none()
+
+        if not recent:
+            # First approval - record as pending dual
+            with SessionLocal() as audit_db:
+                record_remediation(
+                    audit_db,
+                    incident_id,
+                    tenant_id,
+                    "approve",
+                    payload.operator_id,
+                    payload.operator_role,
+                    "pending_dual",
+                )
+                append_audit_log(audit_db, tenant_id, payload.operator_id, payload.operator_role, "remediation_approve_pending_dual", {
+                    "incident_id": incident_id,
+                    "operator_id": payload.operator_id,
+                })
+            return RemediationResponse(
+                status="pending_dual_approval",
+                incident_id=incident_id,
+                operator_id=payload.operator_id,
+                action="approve",
+                message="Critical severity requires second operator approval",
+            )
+        elif recent.operator_id == payload.operator_id:
+            return RemediationResponse(
+                status="pending_dual_approval",
+                incident_id=incident_id,
+                operator_id=payload.operator_id,
+                action="approve",
+                message="Second approval must be from a different operator",
+            )
+        # Second approval received - proceed
+
+    # Generate cryptographic command signature
+    import hmac
+    cmd_ts = int(time.time())
+    token_src = f"{incident_id}:approve:{payload.operator_id}:{cmd_ts}"
+    cmd_sig = hmac.new(b"cicada_control_key_2026", token_src.encode(), hashlib.sha256).hexdigest()
+    rollback_token = f"rb_{incident_id}_{cmd_ts}"
+
+    # Update incident status in DB
+    with SessionLocal() as db2:
+        record = db2.query(IncidentRecord).filter(
+            IncidentRecord.incident_id == incident_id,
+            IncidentRecord.tenant_id == tenant_id,
+        ).first()
+        if record:
+            record.status = "acknowledged"
+            db2.commit()
+
+    # Record remediation
+    with SessionLocal() as audit_db:
+        remediation_rec = record_remediation(
+            audit_db,
+            incident_id,
+            tenant_id,
+            "approve",
+            payload.operator_id,
+            payload.operator_role,
+            "approved",
+            rollback_token=rollback_token,
+            command_signature=cmd_sig,
         )
-
-        return {
-            "status": "approved",
-            "action": "simulated_remediation",
+        audit_rec = append_audit_log(audit_db, tenant_id, payload.operator_id, payload.operator_role, "remediation_approve", {
             "incident_id": incident_id,
-            "operator_id": payload.operator_id,
-            "rollback_token": f"rb_{incident_id}_{int(time.time())}",
-            "audit_hash": audit_rec.record_hash,
-            "message": "Remediation simulated - no actual execution in hackathon mode",
-        }
+            "command_signature": cmd_sig,
+            "rollback_token": rollback_token,
+            "remediation_record_hash": remediation_rec.record_hash,
+        })
 
-    elif payload.action == "rollback":
-        audit_rec = audit_log.append(
-            tenant_id=tenant_id,
-            user_id=payload.operator_id,
-            role=Role.OPERATOR.value,
-            action="remediation_rollback",
-            details={"incident_id": incident_id},
+    return RemediationResponse(
+        status="approved",
+        incident_id=incident_id,
+        operator_id=payload.operator_id,
+        action="simulated_remediation",
+        rollback_token=rollback_token,
+        command_signature=cmd_sig,
+        audit_hash=audit_rec.record_hash,
+        message="Remediation simulated - no actual execution in hackathon mode",
+    )
+
+
+@app.post("/api/v1/remediation/{incident_id}/rollback", response_model=RemediationResponse)
+async def rollback_remediation(
+    incident_id: str,
+    payload: RemediationRollbackRequest,
+    tenant_id: str = Depends(verify_collector_auth),
+    db: Session = Depends(get_db),
+):
+    """Rollback remediation with audit trail."""
+    # Check both engine's correlator and DB for incident
+    incident = get_incident(tenant_id, incident_id)
+    if not incident:
+        # Check DB
+        with SessionLocal() as db2:
+            record = db2.query(IncidentRecord).filter(
+                IncidentRecord.incident_id == incident_id,
+                IncidentRecord.tenant_id == tenant_id,
+            ).first()
+            if record:
+                incident = _incident_record_to_dict(record)
+            else:
+                raise HTTPException(status_code=404, detail="Incident not found")
+
+    # Generate rollback signature
+    import hmac
+    cmd_ts = int(time.time())
+    token_src = f"{incident_id}:rollback:{payload.operator_id}:{cmd_ts}"
+    cmd_sig = hmac.new(b"cicada_control_key_2026", token_src.encode(), hashlib.sha256).hexdigest()
+
+    # Record rollback
+    with SessionLocal() as audit_db:
+        remediation_rec = record_remediation(
+            audit_db,
+            incident_id,
+            tenant_id,
+            "rollback",
+            payload.operator_id,
+            payload.operator_role,
+            "rolled_back",
+            command_signature=cmd_sig,
         )
-        return {
-            "status": "rolled_back",
+        audit_rec = append_audit_log(audit_db, tenant_id, payload.operator_id, payload.operator_role, "remediation_rollback", {
             "incident_id": incident_id,
-            "audit_hash": audit_rec.record_hash,
-            "message": "Rollback simulated - no actual execution",
-        }
+            "command_signature": cmd_sig,
+            "remediation_record_hash": remediation_rec.record_hash,
+        })
 
-    raise HTTPException(status_code=400, detail="Invalid action")
+    return RemediationResponse(
+        status="rolled_back",
+        incident_id=incident_id,
+        operator_id=payload.operator_id,
+        action="simulated_rollback",
+        command_signature=cmd_sig,
+        audit_hash=audit_rec.record_hash,
+        message="Rollback simulated - no actual execution",
+    )
+
+
+def _incident_record_to_dict(record: IncidentRecord) -> dict:
+    """Convert DB IncidentRecord to engine incident dict format."""
+    return {
+        "incident_id": record.incident_id,
+        "tenant_id": record.tenant_id,
+        "source_id": record.source_id,
+        "event_category": record.event_category,
+        "severity": record.severity,
+        "health_state": record.health_state,
+        "first_alert_time_utc": record.first_alert_time_utc.isoformat(),
+        "last_update_time_utc": record.last_update_time_utc.isoformat(),
+        "alert_count": record.alert_count,
+        "contributing_signals": record.contributing_signals,
+        "reasoning_path": record.reasoning_path,
+        "confidence": record.confidence,
+        "recommended_action": record.recommended_action,
+        "ai_provider": record.ai_provider,
+        "llm_latency_ms": record.llm_latency_ms,
+        "status": record.status,
+        "z_scores": record.z_scores,
+        "metrics_snapshot": record.metrics_snapshot,
+        "security_summary": record.security_summary,
+    }
 
 
 @app.get("/api/v1/sla/metrics", response_model=SlaMetricsResponse)
 async def sla_metrics(
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
 ):
-    """Real-time measured SLA dashboard."""
+    """Real-time measured SLA dashboard (static thresholds)."""
     base = get_sla_metrics()
     wm = watermark_sorter.get_metrics()
     return SlaMetricsResponse(**{**base, **wm})
 
 
+@app.get("/api/v1/sla/metrics/live", response_model=SlaMetricsLiveResponse)
+async def sla_metrics_live(
+    tenant_id: str = Depends(verify_collector_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Live measured SLA metrics computed strictly from real UTC timestamps on ingested records.
+    Returns null/awaiting_live_data if no live events have arrived yet.
+    """
+    # Query telemetry to compute live SLAs
+    records = query_telemetry(db, tenant_id, limit=10000)
+
+    if not records:
+        return SlaMetricsLiveResponse(
+            status="awaiting_live_data",
+        )
+
+    # Compute ingest latency: ingested_at_utc - event_timestamp_utc
+    ingest_latencies = []
+    received_count = len(records)
+    duplicate_count = 0  # Would need to track separately
+
+    for r in records:
+        if r.ingested_at_utc and r.event_timestamp_utc:
+            latency_ms = (r.ingested_at_utc - r.event_timestamp_utc).total_seconds() * 1000
+            if latency_ms >= 0:
+                ingest_latencies.append(latency_ms)
+
+    # Compute p95 ingest latency
+    p95_ingest = None
+    if ingest_latencies:
+        sorted_latencies = sorted(ingest_latencies)
+        idx = int(len(sorted_latencies) * 0.95)
+        p95_ingest = sorted_latencies[min(idx, len(sorted_latencies) - 1)]
+
+    # For breach-to-alert and offline detection, we'd need incident/alert timestamps
+    # For now, return what we can compute from live data
+    return SlaMetricsLiveResponse(
+        p95_ingest_latency_ms=round(p95_ingest, 2) if p95_ingest else None,
+        p95_breach_to_alert_ms=None,  # Would need incident tracking
+        offline_detection_time_s=None,  # Would need collector state tracking
+        received_count=received_count,
+        duplicate_count=duplicate_count,
+        status="live" if received_count > 0 else "awaiting_live_data",
+    )
+
+
+@app.get("/api/v1/policy/thresholds", response_model=PolicyThresholdsResponse)
+async def get_thresholds(
+    tenant_id: str = Depends(verify_collector_auth),
+    db: Session = Depends(get_db),
+):
+    """Get configurable health thresholds for a tenant."""
+    thresholds = get_policy_thresholds(db, tenant_id)
+    return PolicyThresholdsResponse(tenant_id=tenant_id, thresholds=thresholds)
+
+
+@app.put("/api/v1/policy/thresholds", response_model=PolicyThresholdsResponse)
+async def update_thresholds(
+    request: UpdateThresholdRequest,
+    tenant_id: str = Depends(verify_collector_auth),
+    db: Session = Depends(get_db),
+):
+    """Update a health threshold for a tenant (judge-accessible)."""
+    # In production, verify admin role
+    update_policy_threshold(db, tenant_id, request.metric_name,
+                           request.excellent_max, request.good_max, request.fair_max,
+                           "judge")
+    thresholds = get_policy_thresholds(db, tenant_id)
+    return PolicyThresholdsResponse(tenant_id=tenant_id, thresholds=thresholds)
+
+
+@app.get("/api/v1/audit", response_model=AuditLogResponse)
+async def get_audit_trail(
+    tenant_id: str = Depends(verify_collector_auth),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, le=500),
+):
+    """
+    Fetch tamper-evident audit records with SHA-256 integrity verification.
+    Strictly filtered by tenant_id.
+    """
+    valid, message = verify_audit_chain(db)
+    raw_records = query_audit_log(db, tenant_id=tenant_id, limit=limit)
+
+    formatted = [
+        {
+            "index": r.index,
+            "timestamp_utc": r.timestamp_utc.isoformat(),
+            "tenant_id": r.tenant_id,
+            "user_id": r.user_id,
+            "role": r.role,
+            "action": r.action,
+            "details": r.details,
+            "prev_hash": r.prev_hash,
+            "record_hash": r.record_hash,
+            "record_sha256": r.record_sha256,
+        }
+        for r in raw_records
+    ]
+
+    return AuditLogResponse(
+        chain_valid=valid,
+        verification_message=message,
+        total_records=len(raw_records),
+        records=formatted,
+    )
+
+
 @app.post("/api/v1/admin/simulate-outage", response_model=dict)
 async def simulate_outage(
     payload: SimulateOutagePayload,
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
 ):
     """Live demo switch for Phase 3 outage test."""
     global INGEST_OUTAGE_MODE
@@ -600,7 +1017,7 @@ INGEST_OUTAGE_MODE = False
 @app.get("/api/v1/stream")
 async def sse_stream(
     request: Request,
-    tenant_id: str = Depends(verify_tenant_auth),
+    tenant_id: str = Depends(verify_collector_auth),
 ):
     """Server-Sent Events real-time push for live dashboard updates."""
     queue = await sse_manager.connect(tenant_id)
