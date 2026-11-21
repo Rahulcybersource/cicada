@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     CICADA 2026 - Laptop 2: Tier 1 Local Collector for tenant_acme_corp (ap-south-1)
     Connects to Laptop 4's Tier 2 SaaS for metadata egress.
@@ -23,7 +23,7 @@ param(
     [string]$Tier1Port = "8001"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $PROJECT_ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $PROJECT_ROOT = Join-Path $PROJECT_ROOT ".."
 $VENV_PATH = Join-Path $PROJECT_ROOT ".venv"
@@ -44,7 +44,7 @@ function Write-Warning($message) { Write-Status $message $YELLOW }
 function Write-Error($message) { Write-Status $message $RED }
 function Write-Info($message) { Write-Status $message $MAGENTA }
 
-# ─── Configuration ───
+# â”€â”€â”€ Configuration â”€â”€â”€
 $TENANT_ID = "tenant_acme_corp"
 $COLLECTOR_ID = "col_blr_edge_01"
 $REGION_ID = "ap-south-1"
@@ -53,9 +53,9 @@ $TENANT_SALT = "tenant_acme_corp_salt_2024"
 $SOURCE_TIMEZONE = "Asia/Kolkata"
 $TIER2_BASE_URL = "http://$Tier2Ip:8000"
 
-Write-Success "═══════════════════════════════════════════════════════"
+Write-Success "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Success "  CICADA 2026 - LAPTOP 2: TIER 1 COLLECTOR (ACME)"
-Write-Success "═══════════════════════════════════════════════════════"
+Write-Success "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Info "Tenant:       $TENANT_ID"
 Write-Info "Region:       $REGION_ID (Bangalore)"
 Write-Info "Collector:    $COLLECTOR_ID"
@@ -63,7 +63,7 @@ Write-Info "Tier 2 SaaS:  $TIER2_BASE_URL"
 Write-Info "Local Port:   $Tier1Port"
 Write-Status ""
 
-# ─── Prerequisites Check ───
+# â”€â”€â”€ Prerequisites Check â”€â”€â”€
 Write-Status "Checking prerequisites..."
 
 try {
@@ -74,23 +74,27 @@ try {
     exit 1
 }
 
-# ─── Virtual Environment ───
+# â”€â”€â”€ Virtual Environment â”€â”€â”€
 if (-not (Test-Path $VENV_PATH)) {
     Write-Status "Creating Python virtual environment..."
     & $PYTHON -m venv $VENV_PATH
     Write-Success "Virtual environment created"
 }
 
-# ─── Install Python Dependencies ───
+# â”€â”€â”€ Install Python Dependencies â”€â”€â”€
 Write-Status "Installing Python dependencies..."
-& $PIP install --upgrade pip -q
-& $PIP install -r (Join-Path $PROJECT_ROOT "requirements.txt") -q 2>$null || @(
-    "fastapi", "uvicorn[standard]", "pydantic", "pydantic-settings", "sqlalchemy",
-    "httpx", "cryptography", "python-dotenv", "pytest", "pytest-asyncio", "pytest-mock", "python-multipart"
-) | ForEach-Object { & $PIP install $_ -q }
+# pip self-upgrade skipped
+$pipResult = & $PIP install -r (Join-Path $PROJECT_ROOT "requirements.txt") -q 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "requirements.txt install had issues, falling back to individual packages..."
+    @(
+        "fastapi", "uvicorn[standard]", "pydantic", "pydantic-settings", "sqlalchemy",
+        "httpx", "cryptography", "python-dotenv", "pytest", "pytest-asyncio", "pytest-mock", "python-multipart"
+    ) | ForEach-Object { & $PIP install $_ -q }
+}
 Write-Success "Python dependencies installed"
 
-# ─── Run Tests ───
+# â”€â”€â”€ Run Tests â”€â”€â”€
 if (-not $SkipTests) {
     Write-Status "Running test suites..."
     Push-Location $PROJECT_ROOT
@@ -104,7 +108,7 @@ if (-not $SkipTests) {
     Write-Success "All tests passed"
 }
 
-# ─── Set Environment Variables ───
+# â”€â”€â”€ Set Environment Variables â”€â”€â”€
 $env:TENANT_ID = $TENANT_ID
 $env:COLLECTOR_ID = $COLLECTOR_ID
 $env:REGION_ID = $REGION_ID
@@ -115,7 +119,7 @@ $env:TIER2_BASE_URL = $TIER2_BASE_URL
 
 Write-Success "Environment configured for $TENANT_ID"
 
-# ─── Initialize Tier 1 Database ───
+# â”€â”€â”€ Initialize Tier 1 Database â”€â”€â”€
 Write-Status "Initializing Tier 1 database..."
 & $PYTHON -c "
 import sys
@@ -126,12 +130,12 @@ print('Tier 1 database initialized')
 "
 Write-Success "Tier 1 database initialized"
 
-# ─── Start Tier 1 Collector ───
+# â”€â”€â”€ Start Tier 1 Collector â”€â”€â”€
 Write-Status "Starting Tier 1 Collector on port $Tier1Port (0.0.0.0)..."
 $logDir = Join-Path $PROJECT_ROOT "logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $tier1Log = Join-Path $logDir "tier1_collector_acme.log"
-$tier1Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier1Log -RedirectStandardError $tier1Log
+$tier1Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier1Log -RedirectStandardError "$tier1Log.err"
 Write-Success "Tier 1 Collector started (PID: $($tier1Process.Id))"
 
 # Wait for Tier 1 to be ready
@@ -164,11 +168,11 @@ try {
     Write-Warning "Could not reach Tier 2 SaaS at $TIER2_BASE_URL (will retry via forwarder)"
 }
 
-# ─── Summary ───
+# â”€â”€â”€ Summary â”€â”€â”€
 Write-Status ""
-Write-Success "═══════════════════════════════════════════════════════"
+Write-Success "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Success "  LAPTOP 2 READY - TIER 1 COLLECTOR (ACME)"
-Write-Success "═══════════════════════════════════════════════════════"
+Write-Success "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Status ""
 Write-Status "Local Collector API: http://0.0.0.0:$Tier1Port (accessible at http://localhost:$Tier1Port)"
 Write-Status ""
@@ -187,7 +191,7 @@ Write-Status ""
 Write-Status "Press Ctrl+C to stop..."
 Write-Status ""
 
-# ─── Wait for Shutdown ───
+# â”€â”€â”€ Wait for Shutdown â”€â”€â”€
 try {
     while ($true) {
         Start-Sleep -Seconds 5
@@ -205,3 +209,4 @@ try {
     }
     Write-Success "Tier 1 Collector stopped"
 }
+

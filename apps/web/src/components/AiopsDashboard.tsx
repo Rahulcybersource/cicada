@@ -135,14 +135,6 @@ interface RemediationResponse {
   };
 }
 
-interface SlaMetrics {
-  active_incidents: number;
-  tracked_sources: number;
-  z_score_threshold: number;
-  correlation_window_seconds: number;
-  heartbeat_timeout_seconds: number;
-}
-
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 const TENANT_ID = "tenant_acme_corp";
 
@@ -230,7 +222,7 @@ export function AiopsDashboard({ tenantId }: { tenantId: string }) {
             return [data, ...prev];
           });
         }
-      } catch (e) {}
+      } catch (e) { }
     };
     es.onerror = () => setSseConnected(false);
     setEventSource(es);
@@ -513,452 +505,452 @@ export function AiopsDashboard({ tenantId }: { tenantId: string }) {
           <div className="lg:col-span-2">
             {/* Filters */}
             <div className="card-base p-4 flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-[#7A746E]">Status:</label>
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="input-base w-auto px-3 py-1.5 text-xs">
-              <option value="all">All</option>
-              <option value="open">Open</option>
-              <option value="acknowledged">Acknowledged</option>
-              <option value="resolved">Resolved</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-[#7A746E]">Severity:</label>
-            <select value={filterSeverity} onChange={e => setFilterSeverity(e.target.value)} className="input-base w-auto px-3 py-1.5 text-xs">
-              <option value="all">All</option>
-              <option value="critical">Critical</option>
-              <option value="warning">Warning</option>
-              <option value="info">Info</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-2 ml-auto">
-            <label className="flex items-center gap-1.5 text-sm text-[#7A746E] cursor-pointer">
-              <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} className="w-4 h-4 rounded border-[#ECE7E2] text-[#1A1918] focus:ring-[#C9D8DF]" />
-              Auto-refresh (30s)
-            </label>
-            <button onClick={fetchData} className="btn-ghost p-2" disabled={loading}>
-              <RefreshCw className={`w-5 h-5 ${loading ? "animate-spin" : ""}`} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-        {/* Incidents List + Detail */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Incidents List */}
-          <div className="lg:col-span-1 space-y-6">
-            <div className="section-card">
-              <h2 className="section-card-title flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-[#EFC2AE]" />
-                Incidents ({filteredIncidents.length})
-              </h2>
-              <div className="space-y-2 max-h-[700px] overflow-y-auto">
-                {filteredIncidents.length === 0 ? (
-                  <div className="empty-state py-8">
-                    <AlertTriangle className="empty-state-icon w-8 h-8" />
-                    <p className="empty-state-text">No incidents match filters</p>
-                  </div>
-                ) : (
-                  filteredIncidents.map(incident => (
-                    <button
-                      key={incident.incident_id}
-                      onClick={() => setSelectedIncident(incident)}
-                      className={`w-full text-left p-3 card-base transition-colors ${selectedIncident?.incident_id === incident.incident_id ? "gradient-blush-sand border-2 border-[#EFC2AE]" : "hover:bg-[#F9F7F4]"}`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-mono text-sm text-[#1A1918] truncate">{incident.incident_id}</span>
-                            <span className={`badge-pill ${getSeverityClass(incident.severity)}`}>{incident.severity}</span>
-                            <span className={`badge-pill ${getAiProviderClass(incident.ai_provider)}`}>
-                              {getAiProviderIcon(incident.ai_provider)}
-                              {incident.ai_provider.toUpperCase()}
-                            </span>
-                            <span className={`badge-pill ${getHealthClass(incident.health_state)}`}>{incident.health_state}</span>
-                          </div>
-                          <p className="text-xs text-[#7A746E] mt-1 truncate">{incident.reasoning_path}</p>
-                          <div className="flex items-center gap-2 mt-1 text-xs text-[#B8B3AC] flex-wrap">
-                            <span className="font-mono">{incident.alert_count} alerts</span>
-                            <span className="font-mono">{incident.confidence.toFixed(0)}%</span>
-                            <span className="font-mono">{incident.llm_latency_ms}ms</span>
-                            {(incident.suppressed_duplicate_count ?? 0) > 0 && (
-                              <span className="badge-pill bg-[#FDF3E0] text-[#E8B86D] border-[#FDF3E0]">
-                                <BellOff className="w-3 h-3 inline mr-1" />
-                                Duplicates Suppressed: {incident.suppressed_duplicate_count}
-                              </span>
-                            )}
-                            {incident.affected_components?.length > 0 && (
-                              <span className="badge-pill bg-[#E8F2E8] text-[#6B9E6B] border-[#E8F2E8]">
-                                <Server className="w-3 h-3 inline mr-1" />
-                                Components: {incident.affected_components.length}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </button>
-                  ))
-                )}
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-[#7A746E]">Status:</label>
+                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="input-base w-auto px-3 py-1.5 text-xs">
+                  <option value="all">All</option>
+                  <option value="open">Open</option>
+                  <option value="acknowledged">Acknowledged</option>
+                  <option value="resolved">Resolved</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-[#7A746E]">Severity:</label>
+                <select value={filterSeverity} onChange={e => setFilterSeverity(e.target.value)} className="input-base w-auto px-3 py-1.5 text-xs">
+                  <option value="all">All</option>
+                  <option value="critical">Critical</option>
+                  <option value="warning">Warning</option>
+                  <option value="info">Info</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2 ml-auto">
+                <label className="flex items-center gap-1.5 text-sm text-[#7A746E] cursor-pointer">
+                  <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} className="w-4 h-4 rounded border-[#ECE7E2] text-[#1A1918] focus:ring-[#C9D8DF]" />
+                  Auto-refresh (30s)
+                </label>
+                <button onClick={fetchData} className="btn-ghost p-2" disabled={loading}>
+                  <RefreshCw className={`w-5 h-5 ${loading ? "animate-spin" : ""}`} />
+                </button>
               </div>
             </div>
           </div>
+    </div>
 
-          {/* Incident Detail */}
-          <div className="lg:col-span-2 space-y-6">
-            {selectedIncident ? (
-              <div className="section-card space-y-6 animate-fade-in">
-                {/* Incident Header */}
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <h2 className="font-display text-xl font-semibold text-[#1A1918]">{selectedIncident.incident_id}</h2>
-                      <span className={`badge-pill ${getSeverityClass(selectedIncident.severity)}`}>{selectedIncident.severity.toUpperCase()}</span>
-                      <span className={`badge-pill ${getAiProviderClass(selectedIncident.ai_provider)}`}>
-                        {getAiProviderIcon(selectedIncident.ai_provider)}
-                        {selectedIncident.ai_provider.toUpperCase()}
-                      </span>
-                      <span className={`badge-pill ${getHealthClass(selectedIncident.health_state)}`}>{selectedIncident.health_state}</span>
+          {/* Incidents List + Detail */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Incidents List */}
+            <div className="lg:col-span-1 space-y-6">
+              <div className="section-card">
+                <h2 className="section-card-title flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-[#EFC2AE]" />
+                  Incidents ({filteredIncidents.length})
+                </h2>
+                <div className="space-y-2 max-h-[700px] overflow-y-auto">
+                  {filteredIncidents.length === 0 ? (
+                    <div className="empty-state py-8">
+                      <AlertTriangle className="empty-state-icon w-8 h-8" />
+                      <p className="empty-state-text">No incidents match filters</p>
                     </div>
-                    <p className="text-[#7A746E] mt-2">{selectedIncident.reasoning_path}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleRemediate(selectedIncident.incident_id, "approve", true)}
-                      className="btn-primary"
-                      disabled={selectedIncident.status !== "open" || remediationState?.policy_status === "approved"}
-                    >
-                      <CheckCircle className="w-4 h-4" /> {remediationState?.policy_status === "approved" ? "Approved" : "Approve & Simulate"}
-                    </button>
-                    <button onClick={() => handleRemediate(selectedIncident.incident_id, "rollback")} className="btn-secondary" disabled={!remediationState?.rollback_token || remediationState?.policy_status === "rolled_back"}>
-                      <RotateCcw className="w-4 h-4" /> Rollback
-                    </button>
-                  </div>
+                  ) : (
+                    filteredIncidents.map(incident => (
+                      <button
+                        key={incident.incident_id}
+                        onClick={() => setSelectedIncident(incident)}
+                        className={`w-full text-left p-3 card-base transition-colors ${selectedIncident?.incident_id === incident.incident_id ? "gradient-blush-sand border-2 border-[#EFC2AE]" : "hover:bg-[#F9F7F4]"}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono text-sm text-[#1A1918] truncate">{incident.incident_id}</span>
+                              <span className={`badge-pill ${getSeverityClass(incident.severity)}`}>{incident.severity}</span>
+                              <span className={`badge-pill ${getAiProviderClass(incident.ai_provider)}`}>
+                                {getAiProviderIcon(incident.ai_provider)}
+                                {incident.ai_provider.toUpperCase()}
+                              </span>
+                              <span className={`badge-pill ${getHealthClass(incident.health_state)}`}>{incident.health_state}</span>
+                            </div>
+                            <p className="text-xs text-[#7A746E] mt-1 truncate">{incident.reasoning_path}</p>
+                            <div className="flex items-center gap-2 mt-1 text-xs text-[#B8B3AC] flex-wrap">
+                              <span className="font-mono">{incident.alert_count} alerts</span>
+                              <span className="font-mono">{(incident.confidence * 100).toFixed(0)}%</span>
+                              <span className="font-mono">{incident.llm_latency_ms}ms</span>
+                              {(incident.suppressed_duplicate_count ?? 0) > 0 && (
+                                <span className="badge-pill bg-[#FDF3E0] text-[#E8B86D] border-[#FDF3E0]">
+                                  <BellOff className="w-3 h-3 inline mr-1" />
+                                  Duplicates Suppressed: {incident.suppressed_duplicate_count}
+                                </span>
+                              )}
+                              {incident.affected_components?.length > 0 && (
+                                <span className="badge-pill bg-[#E8F2E8] text-[#6B9E6B] border-[#E8F2E8]">
+                                  <Server className="w-3 h-3 inline mr-1" />
+                                  Components: {incident.affected_components.length}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
                 </div>
+              </div>
+            </div>
 
-                {/* Policy Status Badge */}
-                {remediationState && (
-                  <div className="card-base p-4">
-                    <div className="flex items-center gap-4 flex-wrap">
-                      <span className={`badge-pill ${
-                        remediationState.policy_status === "approved" ? "health-good" :
-                        remediationState.policy_status === "rolled_back" ? "health-poor" :
-                        remediationState.policy_status === "pending_dual_approval" ? "bg-[#FDF3E0] text-[#E8B86D] border-[#FDF3E0]" :
-                        "health-fair"
-                      }`}>
-                        {remediationState.policy_status === "pending_dual_approval" ? (
-                          <>
-                            <Users className="w-3 h-3 inline mr-1" />
-                            Pending Dual Approval (First: {remediationState.approved_by})
-                          </>
-                        ) : remediationState.policy_status === "approved" ? (
-                          <>
-                            <ShieldCheck className="w-3 h-3 inline mr-1" />
-                            Approved by {remediationState.approved_by}
-                          </>
-                        ) : remediationState.policy_status === "rolled_back" ? (
-                          <>
-                            <RotateCcw className="w-3 h-3 inline mr-1" />
-                            Rolled Back by {remediationState.audit_trail?.rolled_back_by || "unknown"}
-                          </>
-                        ) : (
-                          <>
-                            <Info className="w-3 h-3 inline mr-1" />
-                            {remediationState.policy_status}
-                          </>
+            {/* Incident Detail */}
+            <div className="lg:col-span-2 space-y-6">
+              {selectedIncident ? (
+                <div className="section-card space-y-6 animate-fade-in">
+                  {/* Incident Header */}
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <h2 className="font-display text-xl font-semibold text-[#1A1918]">{selectedIncident.incident_id}</h2>
+                        <span className={`badge-pill ${getSeverityClass(selectedIncident.severity)}`}>{selectedIncident.severity.toUpperCase()}</span>
+                        <span className={`badge-pill ${getAiProviderClass(selectedIncident.ai_provider)}`}>
+                          {getAiProviderIcon(selectedIncident.ai_provider)}
+                          {selectedIncident.ai_provider.toUpperCase()}
+                        </span>
+                        <span className={`badge-pill ${getHealthClass(selectedIncident.health_state)}`}>{selectedIncident.health_state}</span>
+                      </div>
+                      <p className="text-[#7A746E] mt-2">{selectedIncident.reasoning_path}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleRemediate(selectedIncident.incident_id, "approve", true)}
+                        className="btn-primary"
+                        disabled={selectedIncident.status !== "open" || remediationState?.policy_status === "approved"}
+                      >
+                        <CheckCircle className="w-4 h-4" /> {remediationState?.policy_status === "approved" ? "Approved" : "Approve & Simulate"}
+                      </button>
+                      <button onClick={() => handleRemediate(selectedIncident.incident_id, "rollback")} className="btn-secondary" disabled={!remediationState?.rollback_token || remediationState?.policy_status === "rolled_back"}>
+                        <RotateCcw className="w-4 h-4" /> Rollback
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Policy Status Badge */}
+                  {remediationState && (
+                    <div className="card-base p-4">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <span className={`badge-pill ${remediationState.policy_status === "approved" ? "health-good" :
+                          remediationState.policy_status === "rolled_back" ? "health-poor" :
+                            remediationState.policy_status === "pending_dual_approval" ? "bg-[#FDF3E0] text-[#E8B86D] border-[#FDF3E0]" :
+                              "health-fair"
+                          }`}>
+                          {remediationState.policy_status === "pending_dual_approval" ? (
+                            <>
+                              <Users className="w-3 h-3 inline mr-1" />
+                              Pending Dual Approval (First: {remediationState.approved_by})
+                            </>
+                          ) : remediationState.policy_status === "approved" ? (
+                            <>
+                              <ShieldCheck className="w-3 h-3 inline mr-1" />
+                              Approved by {remediationState.approved_by}
+                            </>
+                          ) : remediationState.policy_status === "rolled_back" ? (
+                            <>
+                              <RotateCcw className="w-3 h-3 inline mr-1" />
+                              Rolled Back by {remediationState.audit_trail?.rolled_back_by || "unknown"}
+                            </>
+                          ) : (
+                            <>
+                              <Info className="w-3 h-3 inline mr-1" />
+                              {remediationState.policy_status}
+                            </>
+                          )}
+                        </span>
+                        {remediationState.policy_status === "pending_dual_approval" && dualApprovalPending && (
+                          <button onClick={() => handleDualApproval(selectedIncident.incident_id)} className="btn-primary">
+                            <Users className="w-4 h-4 mr-1" /> Second Operator Approve
+                          </button>
                         )}
-                      </span>
-                      {remediationState.policy_status === "pending_dual_approval" && dualApprovalPending && (
-                        <button onClick={() => handleDualApproval(selectedIncident.incident_id)} className="btn-primary">
-                          <Users className="w-4 h-4 mr-1" /> Second Operator Approve
-                        </button>
-                      )}
-                      {remediationState.rollback_token && remediationState.policy_status !== "rolled_back" && (
-                        <button onClick={() => handleRemediate(selectedIncident.incident_id, "rollback")} className="btn-destructive">
-                          <RotateCcw className="w-4 h-4 mr-1" /> Execute Rollback
-                        </button>
-                      )}
+                        {remediationState.rollback_token && remediationState.policy_status !== "rolled_back" && (
+                          <button onClick={() => handleRemediate(selectedIncident.incident_id, "rollback")} className="btn-destructive">
+                            <RotateCcw className="w-4 h-4 mr-1" /> Execute Rollback
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Meta Grid */}
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-                  <div className="card-base p-4">
-                    <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.alert_count}</div>
-                    <div className="text-sm text-[#7A746E]">Alert Count</div>
-                  </div>
-                  <div className="card-base p-4">
-                    <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.confidence.toFixed(0)}%</div>
-                    <div className="text-sm text-[#7A746E]">Confidence</div>
-                  </div>
-                  <div className="card-base p-4">
-                    <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.llm_latency_ms}ms</div>
-                    <div className="text-sm text-[#7A746E]">LLM Latency</div>
-                  </div>
-                  <div className="card-base p-4">
-                    <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.status}</div>
-                    <div className="text-sm text-[#7A746E]">Status</div>
-                  </div>
-                  <div className="card-base p-4">
-                    <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.suppressed_duplicate_count ?? 0}</div>
-                    <div className="text-sm text-[#7A746E]">Duplicates Suppressed</div>
-                  </div>
-                  <div className="card-base p-4">
-                    <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.affected_components?.length ?? 0}</div>
-                    <div className="text-sm text-[#7A746E]">Affected Components</div>
-                  </div>
-                </div>
-
-                {/* Explainable AIOps Detail Panel */}
-                <div className="card-base p-4 space-y-4 border-l-4 border-[#C9D8DF] bg-[#F8FAF8]">
-                  <h3 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
-                    <Brain className="w-5 h-5 text-[#C9D8DF]" />
-                    Explainable AIOps Detail
-                  </h3>
-
-                  {/* Why Flagged */}
-                  <div className="space-y-2">
-                    <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
-                      <Zap className="w-4 h-4 text-[#EFC2AE]" />
-                      Why Flagged (Baseline vs Observed)
-                    </h4>
-                    <div className="font-mono text-sm text-[#1A1918] bg-[#F8F6F3] p-3 rounded-[8px] whitespace-pre-wrap border border-[#ECE7E2]">
-                      {selectedIncident.why_flagged || "No baseline deviation data available"}
+                  {/* Meta Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+                    <div className="card-base p-4">
+                      <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.alert_count}</div>
+                      <div className="text-sm text-[#7A746E]">Alert Count</div>
+                    </div>
+                    <div className="card-base p-4">
+                      <div className="text-2xl font-bold text-[#1A1918] font-display">{(selectedIncident.confidence * 100).toFixed(0)}%</div>
+                      <div className="text-sm text-[#7A746E]">Confidence</div>
+                    </div>
+                    <div className="card-base p-4">
+                      <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.llm_latency_ms}ms</div>
+                      <div className="text-sm text-[#7A746E]">LLM Latency</div>
+                    </div>
+                    <div className="card-base p-4">
+                      <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.status}</div>
+                      <div className="text-sm text-[#7A746E]">Status</div>
+                    </div>
+                    <div className="card-base p-4">
+                      <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.suppressed_duplicate_count ?? 0}</div>
+                      <div className="text-sm text-[#7A746E]">Duplicates Suppressed</div>
+                    </div>
+                    <div className="card-base p-4">
+                      <div className="text-2xl font-bold text-[#1A1918] font-display">{selectedIncident.affected_components?.length ?? 0}</div>
+                      <div className="text-sm text-[#7A746E]">Affected Components</div>
                     </div>
                   </div>
 
-                  {/* Contributing Signals */}
-                  <div className="space-y-2">
-                    <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
-                      <Signal className="w-4 h-4 text-[#C9D8DF]" />
-                      Contributing Signals (Allow-listed Metadata Only)
-                    </h4>
+                  {/* Explainable AIOps Detail Panel */}
+                  <div className="card-base p-4 space-y-4 border-l-4 border-[#C9D8DF] bg-[#F8FAF8]">
+                    <h3 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
+                      <Brain className="w-5 h-5 text-[#C9D8DF]" />
+                      Explainable AIOps Detail
+                    </h3>
+
+                    {/* Why Flagged */}
+                    <div className="space-y-2">
+                      <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-[#EFC2AE]" />
+                        Why Flagged (Baseline vs Observed)
+                      </h4>
+                      <div className="font-mono text-sm text-[#1A1918] bg-[#F8F6F3] p-3 rounded-[8px] whitespace-pre-wrap border border-[#ECE7E2]">
+                        {selectedIncident.why_flagged || "No baseline deviation data available"}
+                      </div>
+                    </div>
+
+                    {/* Contributing Signals */}
+                    <div className="space-y-2">
+                      <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
+                        <Signal className="w-4 h-4 text-[#C9D8DF]" />
+                        Contributing Signals (Allow-listed Metadata Only)
+                      </h4>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedIncident.contributing_signals.map((signal, idx) => (
+                          <span key={idx} className="signal-chip bg-[#F8F6F3] border border-[#ECE7E2]">{signal}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Confidence & Reasoning */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
+                          <Activity className="w-4 h-4 text-[#EFC2AE]" />
+                          Confidence
+                        </h4>
+                        <div className="card-base p-3">
+                          <div className="text-3xl font-bold text-[#1A1918] font-display">{(selectedIncident.confidence * 100).toFixed(0)}%</div>
+                          <div className="w-full bg-[#ECE7E2] rounded-full h-2 mt-2">
+                            <div
+                              className="bg-[#EFC2AE] h-2 rounded-full transition-all duration-500"
+                              style={{ width: `${selectedIncident.confidence * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-[#C9D8DF]" />
+                          Reasoning Path
+                        </h4>
+                        <div className="card-base p-3">
+                          <p className="text-[#1A1918] whitespace-pre-wrap">{selectedIncident.reasoning_path}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Rationale */}
+                    <div className="space-y-2">
+                      <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
+                        <ShieldIcon className="w-4 h-4 text-[#EFC2AE]" />
+                        Action Rationale (Why This Action)
+                      </h4>
+                      <div className="font-mono text-sm text-[#1A1918] bg-[#F8F6F3] p-3 rounded-[8px] whitespace-pre-wrap border border-[#ECE7E2]">
+                        {selectedIncident.why_this_action || "No action rationale available"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contributing Signals (Legacy Display) */}
+                  <div className="card-base p-4">
+                    <h3 className="font-display font-medium text-[#1A1918] mb-3">All Contributing Signals</h3>
                     <div className="flex flex-wrap gap-2">
                       {selectedIncident.contributing_signals.map((signal, idx) => (
-                        <span key={idx} className="signal-chip bg-[#F8F6F3] border border-[#ECE7E2]">{signal}</span>
+                        <span key={idx} className="signal-chip">{signal}</span>
                       ))}
                     </div>
                   </div>
 
-                  {/* Confidence & Reasoning */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
-                        <Activity className="w-4 h-4 text-[#EFC2AE]" />
-                        Confidence
-                      </h4>
-                      <div className="card-base p-3">
-                        <div className="text-3xl font-bold text-[#1A1918] font-display">{selectedIncident.confidence.toFixed(0)}%</div>
-                        <div className="w-full bg-[#ECE7E2] rounded-full h-2 mt-2">
-                          <div
-                            className="bg-[#EFC2AE] h-2 rounded-full transition-all duration-500"
-                            style={{ width: `${selectedIncident.confidence * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-[#C9D8DF]" />
-                        Reasoning Path
-                      </h4>
-                      <div className="card-base p-3">
-                        <p className="text-[#1A1918] whitespace-pre-wrap">{selectedIncident.reasoning_path}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Action Rationale */}
-                  <div className="space-y-2">
-                    <h4 className="font-display font-medium text-[#1A1918] flex items-center gap-2">
-                      <ShieldIcon className="w-4 h-4 text-[#EFC2AE]" />
-                      Action Rationale (Why This Action)
-                    </h4>
-                    <div className="font-mono text-sm text-[#1A1918] bg-[#F8F6F3] p-3 rounded-[8px] whitespace-pre-wrap border border-[#ECE7E2]">
-                      {selectedIncident.why_this_action || "No action rationale available"}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Contributing Signals (Legacy Display) */}
-                <div className="card-base p-4">
-                  <h3 className="font-display font-medium text-[#1A1918] mb-3">All Contributing Signals</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedIncident.contributing_signals.map((signal, idx) => (
-                      <span key={idx} className="signal-chip">{signal}</span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Z-Scores */}
-                <div className="card-base p-4">
-                  <h3 className="font-display font-medium text-[#1A1918] mb-3">Z-Scores (Anomaly Detection)</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {Object.entries(selectedIncident.z_scores).map(([metric, value]) => (
-                      <div key={metric} className="card-base p-3 text-center">
-                        <div className={`text-xl font-bold font-mono ${Math.abs(value) > 2.5 ? "text-[#D47A7A]" : "text-[#1A1918]"}`}>{value.toFixed(2)}</div>
-                        <div className="text-xs text-[#7A746E] font-mono">{metric}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Metrics Snapshot */}
-                <div className="card-base p-4">
-                  <h3 className="font-display font-medium text-[#1A1918] mb-3">Metrics Snapshot at Detection</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {Object.entries(selectedIncident.metrics_snapshot).map(([metric, value]) => (
-                      <div key={metric} className="card-base p-3 text-center">
-                        <div className="text-xl font-bold text-[#1A1918] font-display">{typeof value === "number" ? value.toFixed(2) : value}</div>
-                        <div className="text-xs text-[#7A746E] font-mono">{metric}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Affected Components */}
-                {selectedIncident.affected_components?.length > 0 && (
+                  {/* Z-Scores */}
                   <div className="card-base p-4">
-                    <h3 className="font-display font-medium text-[#1A1918] mb-3 flex items-center gap-2">
-                      <Server className="w-5 h-5 text-[#C9D8DF]" />
-                      Affected Components (Cross-Category Correlation)
-                    </h3>
-                    <div className="flex flex-wrap gap-2">
-                      {selectedIncident.affected_components.map((comp, idx) => (
-                        <span key={idx} className="badge-pill bg-[#E8F2E8] text-[#6B9E6B] border-[#E8F2E8]">
-                          <Server className="w-3 h-3 inline mr-1" />
-                          {comp}
-                        </span>
+                    <h3 className="font-display font-medium text-[#1A1918] mb-3">Z-Scores (Anomaly Detection)</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {Object.entries(selectedIncident.z_scores).map(([metric, value]) => (
+                        <div key={metric} className="card-base p-3 text-center">
+                          <div className={`text-xl font-bold font-mono ${Math.abs(value) > 2.5 ? "text-[#D47A7A]" : "text-[#1A1918]"}`}>{value.toFixed(2)}</div>
+                          <div className="text-xs text-[#7A746E] font-mono">{metric}</div>
+                        </div>
                       ))}
                     </div>
                   </div>
-                )}
 
-                {/* Recommended Action */}
-                <div className="card-base p-4 gradient-cream-apricot border-l-4 border-[#EFC2AE]">
-                  <h3 className="font-display font-medium text-[#1A1918] mb-2 flex items-center gap-2">
-                    <CheckCircle className="w-5 h-5 text-[#EFC2AE]" />
-                    Recommended Action
-                  </h3>
-                  <p className="text-[#1A1918]">{selectedIncident.recommended_action}</p>
-                </div>
-
-                {/* AOIM Triage */}
-                {selectedIncident.aoim_triage && (
-                  <div className="card-base p-4 gradient-lavender-cream border-l-4 border-[#D8C9E2]">
-                    <h3 className="font-display font-medium text-[#1A1918] mb-3 flex items-center gap-2">
-                      <GraduationCap className="w-5 h-5 text-[#D8C9E2]" />
-                      AOIM Adaptive Triage
-                    </h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                      <div>
-                        <div className="text-[#7A746E]">Recommended Tier</div>
-                        <div className="font-bold text-[#1A1918]">{selectedIncident.aoim_triage.tier_label || selectedIncident.aoim_triage.recommended_tier}</div>
-                      </div>
-                      <div>
-                        <div className="text-[#7A746E]">Confidence</div>
-                        <div className="font-bold text-[#1A1918]">{(selectedIncident.aoim_triage.confidence * 100).toFixed(0)}%</div>
-                      </div>
-                      <div>
-                        <div className="text-[#7A746E]">Dynamic Importance</div>
-                        <div className="font-bold text-[#1A1918]">{selectedIncident.aoim_triage.dynamic_importance_score?.toFixed(2) || "N/A"}</div>
-                      </div>
-                      <div>
-                        <div className="text-[#7A746E]">Feature Attributions</div>
-                        <div className="font-bold text-[#1A1918]">{selectedIncident.aoim_triage.feature_attributions?.length || 0}</div>
-                      </div>
-                    </div>
-                    {selectedIncident.aoim_triage.feature_attributions && selectedIncident.aoim_triage.feature_attributions.length > 0 && (
-                      <div className="mt-3">
-                        <div className="text-xs text-[#7A746E] mb-2">Feature Attributions:</div>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedIncident.aoim_triage.feature_attributions.map((attr: any, idx: number) => (
-                            <span key={idx} className="badge-pill bg-[#F8F6F3] text-[#1A1918] border-[#ECE7E2] font-mono text-xs">
-                              {attr.feature}: {attr.weight.toFixed(3)} ({attr.direction})
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Security Summary */}
-                {selectedIncident.security_summary && Object.keys(selectedIncident.security_summary).length > 0 && (
+                  {/* Metrics Snapshot */}
                   <div className="card-base p-4">
-                    <h3 className="font-display font-medium text-[#1A1918] mb-3 flex items-center gap-2">
-                      <ShieldAlert className="w-5 h-5 text-[#EFC2AE]" />
-                      Security Summary
-                    </h3>
-                    <pre className="font-mono text-xs text-[#1A1918] bg-[#F8F6F3] p-3 rounded-[8px] overflow-auto">
-                      {JSON.stringify(selectedIncident.security_summary, null, 2)}
-                    </pre>
-                  </div>
-                )}
-
-                {/* Audit Trail Timeline */}
-                {(remediationState?.audit_trail || auditTrail.length > 0) && (
-                  <div className="card-base p-4 border-l-4 border-[#EFC2AE] bg-[#FEF9F5]">
-                    <h3 className="font-display font-medium text-[#1A1918] mb-4 flex items-center gap-2">
-                      <Hash className="w-5 h-5 text-[#EFC2AE]" />
-                      Audit Trail Timeline
-                    </h3>
-                    <div className="space-y-3">
-                      {[
-                        remediationState?.audit_trail,
-                        ...auditTrail
-                      ].filter(Boolean).map((entry, idx) => (
-                        <div key={idx} className="flex items-start gap-3 p-3 bg-white rounded-[8px] border border-[#ECE7E2]">
-                          <div className="flex flex-col items-center min-w-[120px] text-xs text-[#7A746E]">
-                            <span className="font-mono">{entry.timestamp_utc ? new Date(entry.timestamp_utc).toLocaleString() : "N/A"}</span>
-                            <span className={`badge-pill ${entry.policy_status === "approved" ? "health-good" : entry.policy_status === "rolled_back" ? "health-poor" : "health-fair"}`}>
-                              {entry.policy_status}
-                            </span>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-mono text-sm text-[#1A1918]">{entry.approved_by || entry.rolled_back_by || "system"} - {entry.policy_status === "rolled_back" ? "Rollback executed" : "Remediation approved"}</div>
-                            <div className="text-xs text-[#7A746E] mt-1">Hash: <span className="font-mono">{entry.audit_hash?.slice(0, 32)}...</span></div>
-                            <div className="text-xs text-[#7A746E] mt-1">Index: <span className="font-mono">{entry.audit_index}</span></div>
-                          </div>
-                          <div className="min-w-[200px]">
-                            <div className="text-xs text-[#7A746E] mb-1">Before State:</div>
-                            <pre className="font-mono text-xs text-[#1A1918] bg-[#F8F6F3] p-2 rounded-[6px] overflow-auto max-h-[100px]">
-                              {JSON.stringify(remediationState?.before_state || {}, null, 2)}
-                            </pre>
-                            <div className="text-xs text-[#7A746E] mt-2 mb-1">After State:</div>
-                            <pre className="font-mono text-xs text-[#1A1918] bg-[#F8F6F3] p-2 rounded-[6px] overflow-auto max-h-[100px]">
-                              {JSON.stringify(remediationState?.after_state || {}, null, 2)}
-                            </pre>
-                          </div>
+                    <h3 className="font-display font-medium text-[#1A1918] mb-3">Metrics Snapshot at Detection</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {Object.entries(selectedIncident.metrics_snapshot).map(([metric, value]) => (
+                        <div key={metric} className="card-base p-3 text-center">
+                          <div className="text-xl font-bold text-[#1A1918] font-display">{typeof value === "number" ? value.toFixed(2) : value}</div>
+                          <div className="text-xs text-[#7A746E] font-mono">{metric}</div>
                         </div>
                       ))}
                     </div>
-                    {remediationState?.rollback_plan && (
-                      <div className="mt-4 p-3 bg-[#FDF3E0] rounded-[8px] border border-[#FDE8E0]">
-                        <div className="text-xs text-[#7A746E] mb-1">Rollback Plan:</div>
-                        <div className="font-mono text-sm text-[#1A1918]">{remediationState.rollback_plan}</div>
-                      </div>
-                    )}
-                    {remediationState?.rollback_token && (
-                      <div className="mt-3 p-3 bg-[#F8F6F3] rounded-[8px] border border-[#ECE7E2]">
-                        <div className="text-xs text-[#7A746E] mb-1">Rollback Token:</div>
-                        <div className="font-mono text-xs text-[#1A1918] break-all">{remediationState.rollback_token}</div>
-                      </div>
-                    )}
                   </div>
-                )}
 
-              </div>
-            ) : (
-              <div className="section-card empty-state h-[500px]">
-                <Brain className="empty-state-icon w-12 h-12 text-[#EFC2AE]" />
-                <p className="empty-state-text text-lg">Select an incident to view explainable RCA</p>
-                <p className="text-[#B8B3AC] text-sm mt-1">Click any incident from the list to see full details including Z-scores, contributing signals, and AI reasoning path</p>
-              </div>
-            )}
+                  {/* Affected Components */}
+                  {selectedIncident.affected_components?.length > 0 && (
+                    <div className="card-base p-4">
+                      <h3 className="font-display font-medium text-[#1A1918] mb-3 flex items-center gap-2">
+                        <Server className="w-5 h-5 text-[#C9D8DF]" />
+                        Affected Components (Cross-Category Correlation)
+                      </h3>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedIncident.affected_components.map((comp, idx) => (
+                          <span key={idx} className="badge-pill bg-[#E8F2E8] text-[#6B9E6B] border-[#E8F2E8]">
+                            <Server className="w-3 h-3 inline mr-1" />
+                            {comp}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recommended Action */}
+                  <div className="card-base p-4 gradient-cream-apricot border-l-4 border-[#EFC2AE]">
+                    <h3 className="font-display font-medium text-[#1A1918] mb-2 flex items-center gap-2">
+                      <CheckCircle className="w-5 h-5 text-[#EFC2AE]" />
+                      Recommended Action
+                    </h3>
+                    <p className="text-[#1A1918]">{selectedIncident.recommended_action}</p>
+                  </div>
+
+                  {/* AOIM Triage */}
+                  {selectedIncident.aoim_triage && (
+                    <div className="card-base p-4 gradient-lavender-cream border-l-4 border-[#D8C9E2]">
+                      <h3 className="font-display font-medium text-[#1A1918] mb-3 flex items-center gap-2">
+                        <GraduationCap className="w-5 h-5 text-[#D8C9E2]" />
+                        AOIM Adaptive Triage
+                      </h3>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                        <div>
+                          <div className="text-[#7A746E]">Recommended Tier</div>
+                          <div className="font-bold text-[#1A1918]">{selectedIncident.aoim_triage.tier_label || selectedIncident.aoim_triage.recommended_tier}</div>
+                        </div>
+                        <div>
+                          <div className="text-[#7A746E]">Confidence</div>
+                          <div className="font-bold text-[#1A1918]">{(selectedIncident.aoim_triage.confidence * 100).toFixed(0)}%</div>
+                        </div>
+                        <div>
+                          <div className="text-[#7A746E]">Dynamic Importance</div>
+                          <div className="font-bold text-[#1A1918]">{selectedIncident.aoim_triage.dynamic_importance_score?.toFixed(2) || "N/A"}</div>
+                        </div>
+                        <div>
+                          <div className="text-[#7A746E]">Feature Attributions</div>
+                          <div className="font-bold text-[#1A1918]">{selectedIncident.aoim_triage.feature_attributions?.length || 0}</div>
+                        </div>
+                      </div>
+                      {selectedIncident.aoim_triage.feature_attributions && selectedIncident.aoim_triage.feature_attributions.length > 0 && (
+                        <div className="mt-3">
+                          <div className="text-xs text-[#7A746E] mb-2">Feature Attributions:</div>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedIncident.aoim_triage.feature_attributions.map((attr: any, idx: number) => (
+                              <span key={idx} className="badge-pill bg-[#F8F6F3] text-[#1A1918] border-[#ECE7E2] font-mono text-xs">
+                                {attr.feature}: {attr.weight.toFixed(3)} ({attr.direction})
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Security Summary */}
+                  {selectedIncident.security_summary && Object.keys(selectedIncident.security_summary).length > 0 && (
+                    <div className="card-base p-4">
+                      <h3 className="font-display font-medium text-[#1A1918] mb-3 flex items-center gap-2">
+                        <ShieldAlert className="w-5 h-5 text-[#EFC2AE]" />
+                        Security Summary
+                      </h3>
+                      <pre className="font-mono text-xs text-[#1A1918] bg-[#F8F6F3] p-3 rounded-[8px] overflow-auto">
+                        {JSON.stringify(selectedIncident.security_summary, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Audit Trail Timeline */}
+                  {(remediationState?.audit_trail || auditTrail.length > 0) && (
+                    <div className="card-base p-4 border-l-4 border-[#EFC2AE] bg-[#FEF9F5]">
+                      <h3 className="font-display font-medium text-[#1A1918] mb-4 flex items-center gap-2">
+                        <Hash className="w-5 h-5 text-[#EFC2AE]" />
+                        Audit Trail Timeline
+                      </h3>
+                      <div className="space-y-3">
+                        {[
+                          remediationState?.audit_trail,
+                          ...auditTrail
+                        ].filter(Boolean).map((entry, idx) => (
+                          <div key={idx} className="flex items-start gap-3 p-3 bg-white rounded-[8px] border border-[#ECE7E2]">
+                            <div className="flex flex-col items-center min-w-[120px] text-xs text-[#7A746E]">
+                              <span className="font-mono">{entry.timestamp_utc ? new Date(entry.timestamp_utc).toLocaleString() : "N/A"}</span>
+                              <span className={`badge-pill ${entry.policy_status === "approved" ? "health-good" : entry.policy_status === "rolled_back" ? "health-poor" : "health-fair"}`}>
+                                {entry.policy_status}
+                              </span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-mono text-sm text-[#1A1918]">{entry.approved_by || entry.rolled_back_by || "system"} - {entry.policy_status === "rolled_back" ? "Rollback executed" : "Remediation approved"}</div>
+                              <div className="text-xs text-[#7A746E] mt-1">Hash: <span className="font-mono">{entry.audit_hash?.slice(0, 32)}...</span></div>
+                              <div className="text-xs text-[#7A746E] mt-1">Index: <span className="font-mono">{entry.audit_index}</span></div>
+                            </div>
+                            <div className="min-w-[200px]">
+                              <div className="text-xs text-[#7A746E] mb-1">Before State:</div>
+                              <pre className="font-mono text-xs text-[#1A1918] bg-[#F8F6F3] p-2 rounded-[6px] overflow-auto max-h-[100px]">
+                                {JSON.stringify(remediationState?.before_state || {}, null, 2)}
+                              </pre>
+                              <div className="text-xs text-[#7A746E] mt-2 mb-1">After State:</div>
+                              <pre className="font-mono text-xs text-[#1A1918] bg-[#F8F6F3] p-2 rounded-[6px] overflow-auto max-h-[100px]">
+                                {JSON.stringify(remediationState?.after_state || {}, null, 2)}
+                              </pre>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {remediationState?.rollback_plan && (
+                        <div className="mt-4 p-3 bg-[#FDF3E0] rounded-[8px] border border-[#FDE8E0]">
+                          <div className="text-xs text-[#7A746E] mb-1">Rollback Plan:</div>
+                          <div className="font-mono text-sm text-[#1A1918]">{remediationState.rollback_plan}</div>
+                        </div>
+                      )}
+                      {remediationState?.rollback_token && (
+                        <div className="mt-3 p-3 bg-[#F8F6F3] rounded-[8px] border border-[#ECE7E2]">
+                          <div className="text-xs text-[#7A746E] mb-1">Rollback Token:</div>
+                          <div className="font-mono text-xs text-[#1A1918] break-all">{remediationState.rollback_token}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                </div>
+              ) : (
+                <div className="section-card empty-state h-[500px]">
+                  <Brain className="empty-state-icon w-12 h-12 text-[#EFC2AE]" />
+                  <p className="empty-state-text text-lg">Select an incident to view explainable RCA</p>
+                  <p className="text-[#B8B3AC] text-sm mt-1">Click any incident from the list to see full details including Z-scores, contributing signals, and AI reasoning path</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
     </AppShell>
   );
 }

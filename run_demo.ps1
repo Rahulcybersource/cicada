@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     CICADA 2026 - Complete Demo Launcher
     Starts Tier 1 Collector (port 8001), Tier 2 SaaS (port 8000), and Next.js UI (port 3000)
@@ -20,13 +20,13 @@ param(
     [string]$WebPort = "3000"
 )
 
-# ─── Configuration ───
-$ErrorActionPreference = "Stop"
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Configuration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+$ErrorActionPreference = "Continue"
 $PROJECT_ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $VENV_PATH = Join-Path $PROJECT_ROOT ".venv"
 $PYTHON = if (Test-Path "$VENV_PATH\Scripts\python.exe") { "$VENV_PATH\Scripts\python.exe" } else { "python" }
 $PIP = if (Test-Path "$VENV_PATH\Scripts\pip.exe") { "$VENV_PATH\Scripts\pip.exe" } else { "pip" }
-$NPM = "npm"
+$NPM = if (Get-Command "npm.cmd" -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
 
 # Colors
 $GREEN = [ConsoleColor]::Green
@@ -43,7 +43,7 @@ function Write-Success($message) { Write-Status $message $GREEN }
 function Write-Warning($message) { Write-Status $message $YELLOW }
 function Write-Error($message) { Write-Status $message $RED }
 
-# ─── Prerequisites Check ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Prerequisites Check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 Write-Status "Checking prerequisites..."
 
 # Check Python
@@ -73,17 +73,19 @@ try {
     exit 1
 }
 
-# ─── Virtual Environment ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Virtual Environment Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 if (-not (Test-Path $VENV_PATH)) {
     Write-Status "Creating Python virtual environment..."
     & $PYTHON -m venv $VENV_PATH
     Write-Success "Virtual environment created"
 }
 
-# ─── Install Python Dependencies ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Install Python Dependencies Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 Write-Status "Installing Python dependencies..."
-& $PIP install --upgrade pip -q
-& $PIP install -r requirements.txt -q 2>$null || @(
+# pip self-upgrade skipped
+& $PIP install -r requirements.txt -q
+# fallback if requirements failed
+if ($LASTEXITCODE -ne 0) { @(
     "fastapi",
     "uvicorn[standard]",
     "pydantic",
@@ -96,10 +98,10 @@ Write-Status "Installing Python dependencies..."
     "pytest-asyncio",
     "pytest-mock",
     "python-multipart"
-) | ForEach-Object { & $PIP install $_ -q }
+) | ForEach-Object { & $PIP install $_ -q } }
 Write-Success "Python dependencies installed"
 
-# ─── Install Frontend Dependencies ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Install Frontend Dependencies Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 if (-not (Test-Path (Join-Path $PROJECT_ROOT "apps\web\node_modules"))) {
     Write-Status "Installing frontend dependencies..."
     Push-Location (Join-Path $PROJECT_ROOT "apps\web")
@@ -108,7 +110,7 @@ if (-not (Test-Path (Join-Path $PROJECT_ROOT "apps\web\node_modules"))) {
     Write-Success "Frontend dependencies installed"
 }
 
-# ─── Build Frontend ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Build Frontend Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 if (-not $SkipBuild) {
     Write-Status "Building Next.js frontend..."
     Push-Location (Join-Path $PROJECT_ROOT "apps\web")
@@ -121,7 +123,7 @@ if (-not $SkipBuild) {
     Write-Success "Frontend built successfully"
 }
 
-# ─── Run Tests ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Run Tests Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 if (-not $SkipTests) {
     Write-Status "Running test suites..."
     Push-Location $PROJECT_ROOT
@@ -135,18 +137,18 @@ if (-not $SkipTests) {
     Write-Success "All tests passed"
 }
 
-# ─── Load Environment Variables ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Load Environment Variables Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 if (Test-Path (Join-Path $PROJECT_ROOT ".env")) {
     Write-Status "Loading environment variables..."
     Get-Content (Join-Path $PROJECT_ROOT ".env") | ForEach-Object {
         if ($_ -match '^([^#=]+)=(.*)$') {
-            $env:$matches[1] = $matches[2]
+            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
         }
     }
     Write-Success "Environment loaded"
 }
 
-# ─── Initialize Databases ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Initialize Databases Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 Write-Status "Initializing databases..."
 & $PYTHON -c "
 import sys
@@ -159,7 +161,7 @@ print('Databases initialized')
 "
 Write-Success "Databases initialized"
 
-# ─── Start Services ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Start Services Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 Write-Status "Starting services..."
 
 $services = @()
@@ -169,7 +171,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 # Tier 2 SaaS (starts first - Tier 1 depends on it)
 Write-Status "Starting Tier 2 SaaS on port $Tier2Port..."
 $tier2Log = Join-Path $logDir "tier2_saas.log"
-$tier2Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier2_saas.main:app", "--host", "0.0.0.0", "--port", $Tier2Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier2Log -RedirectStandardError $tier2Log
+$tier2Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier2_saas.main:app", "--host", "0.0.0.0", "--port", $Tier2Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier2Log -RedirectStandardError "$tier2Log.err"
 $services += @{ Name = "Tier2 SaaS"; Process = $tier2Process; Port = $Tier2Port; Log = $tier2Log }
 Write-Success "Tier 2 SaaS started (PID: $($tier2Process.Id))"
 
@@ -193,7 +195,7 @@ Write-Success "Tier 2 SaaS is healthy"
 # Tier 1 Collector
 Write-Status "Starting Tier 1 Collector on port $Tier1Port..."
 $tier1Log = Join-Path $logDir "tier1_collector.log"
-$tier1Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier1Log -RedirectStandardError $tier1Log
+$tier1Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier1Log -RedirectStandardError "$tier1Log.err"
 $services += @{ Name = "Tier1 Collector"; Process = $tier1Process; Port = $Tier1Port; Log = $tier1Log }
 Write-Success "Tier 1 Collector started (PID: $($tier1Process.Id))"
 
@@ -218,7 +220,7 @@ Write-Success "Tier 1 Collector is healthy"
 Write-Status "Starting Next.js UI on port $WebPort..."
 $webLog = Join-Path $logDir "web_ui.log"
 Push-Location (Join-Path $PROJECT_ROOT "apps\web")
-$webProcess = Start-Process -FilePath $NPM -ArgumentList "run", "dev" -WorkingDirectory (Join-Path $PROJECT_ROOT "apps\web") -PassThru -RedirectStandardOutput $webLog -RedirectStandardError $webLog
+$webProcess = Start-Process -FilePath $NPM -ArgumentList "run", "dev" -WorkingDirectory (Join-Path $PROJECT_ROOT "apps\web") -PassThru -RedirectStandardOutput $webLog -RedirectStandardError "$webLog.err"
 Pop-Location
 $services += @{ Name = "Next.js UI"; Process = $webProcess; Port = $WebPort; Log = $webLog }
 Write-Success "Next.js UI started (PID: $($webProcess.Id))"
@@ -237,11 +239,11 @@ if (-not $ready) {
     Write-Warning "Next.js UI may still be compiling. Check logs at $webLog"
 }
 
-# ─── Summary ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Summary Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 Write-Status ""
-Write-Success "═══════════════════════════════════════════"
+Write-Success "Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â"
 Write-Success "  CICADA 2026 DEMO READY"
-Write-Success "═══════════════════════════════════════════"
+Write-Success "Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â"
 Write-Status ""
 Write-Status "Services:"
 foreach ($svc in $services) {
@@ -254,15 +256,15 @@ Write-Status "  Tier 1 API:     http://localhost:$Tier1Port/local/"
 Write-Status "  Control Plane:  http://localhost:$WebPort"
 Write-Status ""
 Write-Status "Demo Controls (in Control Plane):"
-Write-Status "  • Tenant Switcher: tenant_acme_corp / tenant_globex_ind"
-Write-Status "  • Outage Toggle:   Simulates Tier 2 outage, proves buffering"
-Write-Status "  • Chaos Injection: Secret leak, brute force, latency spike, etc."
-Write-Status "  • Egress Proof:    Side-by-side raw vs redacted view"
+Write-Status "  Ã¢â‚¬Â¢ Tenant Switcher: tenant_acme_corp / tenant_globex_ind"
+Write-Status "  Ã¢â‚¬Â¢ Outage Toggle:   Simulates Tier 2 outage, proves buffering"
+Write-Status "  Ã¢â‚¬Â¢ Chaos Injection: Secret leak, brute force, latency spike, etc."
+Write-Status "  Ã¢â‚¬Â¢ Egress Proof:    Side-by-side raw vs redacted view"
 Write-Status ""
 Write-Status "Press Ctrl+C to stop all services..."
 Write-Status ""
 
-# ─── Wait for Shutdown ───
+# Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Wait for Shutdown Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 try {
     while ($true) {
         Start-Sleep -Seconds 5
@@ -285,3 +287,4 @@ try {
     }
     Write-Success "All services stopped"
 }
+

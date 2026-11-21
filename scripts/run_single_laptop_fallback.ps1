@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     CICADA 2026 - Single Laptop Fallback Demo
     Runs Tier 2 SaaS (8000), Next.js UI (3000), and BOTH Tier 1 Collectors (8001, 8002) on one machine.
@@ -24,7 +24,7 @@ param(
     [string]$Tier1GlobexPort = "8002"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $PROJECT_ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $PROJECT_ROOT = Join-Path $PROJECT_ROOT ".."
 $VENV_PATH = Join-Path $PROJECT_ROOT ".venv"
@@ -46,7 +46,7 @@ function Write-Warning($message) { Write-Status $message $YELLOW }
 function Write-Error($message) { Write-Status $message $RED }
 function Write-Info($message) { Write-Status $message $MAGENTA }
 
-# ─── Prerequisites Check ───
+# â”€â”€â”€ Prerequisites Check â”€â”€â”€
 Write-Status "Checking prerequisites..."
 
 try {
@@ -73,23 +73,27 @@ try {
     exit 1
 }
 
-# ─── Virtual Environment ───
+# â”€â”€â”€ Virtual Environment â”€â”€â”€
 if (-not (Test-Path $VENV_PATH)) {
     Write-Status "Creating Python virtual environment..."
     & $PYTHON -m venv $VENV_PATH
     Write-Success "Virtual environment created"
 }
 
-# ─── Install Python Dependencies ───
+# â”€â”€â”€ Install Python Dependencies â”€â”€â”€
 Write-Status "Installing Python dependencies..."
-& $PIP install --upgrade pip -q
-& $PIP install -r (Join-Path $PROJECT_ROOT "requirements.txt") -q 2>$null || @(
-    "fastapi", "uvicorn[standard]", "pydantic", "pydantic-settings", "sqlalchemy",
-    "httpx", "cryptography", "python-dotenv", "pytest", "pytest-asyncio", "pytest-mock", "python-multipart"
-) | ForEach-Object { & $PIP install $_ -q }
+# pip self-upgrade skipped
+$pipResult = & $PIP install -r (Join-Path $PROJECT_ROOT "requirements.txt") -q 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "requirements.txt install had issues, falling back to individual packages..."
+    @(
+        "fastapi", "uvicorn[standard]", "pydantic", "pydantic-settings", "sqlalchemy",
+        "httpx", "cryptography", "python-dotenv", "pytest", "pytest-asyncio", "pytest-mock", "python-multipart"
+    ) | ForEach-Object { & $PIP install $_ -q }
+}
 Write-Success "Python dependencies installed"
 
-# ─── Install Frontend Dependencies ───
+# â”€â”€â”€ Install Frontend Dependencies â”€â”€â”€
 $WEB_DIR = Join-Path $PROJECT_ROOT "apps\web"
 if (-not (Test-Path (Join-Path $WEB_DIR "node_modules"))) {
     Write-Status "Installing frontend dependencies..."
@@ -99,7 +103,7 @@ if (-not (Test-Path (Join-Path $WEB_DIR "node_modules"))) {
     Write-Success "Frontend dependencies installed"
 }
 
-# ─── Build Frontend ───
+# â”€â”€â”€ Build Frontend â”€â”€â”€
 if (-not $SkipBuild) {
     Write-Status "Building Next.js frontend..."
     Push-Location $WEB_DIR
@@ -112,7 +116,7 @@ if (-not $SkipBuild) {
     Write-Success "Frontend built successfully"
 }
 
-# ─── Run Tests ───
+# â”€â”€â”€ Run Tests â”€â”€â”€
 if (-not $SkipTests) {
     Write-Status "Running test suites..."
     Push-Location $PROJECT_ROOT
@@ -126,18 +130,18 @@ if (-not $SkipTests) {
     Write-Success "All tests passed"
 }
 
-# ─── Load Environment Variables ───
+# â”€â”€â”€ Load Environment Variables â”€â”€â”€
 if (Test-Path (Join-Path $PROJECT_ROOT ".env")) {
     Write-Status "Loading environment variables..."
     Get-Content (Join-Path $PROJECT_ROOT ".env") | ForEach-Object {
         if ($_ -match '^([^#=]+)=(.*)$') {
-            $env:$matches[1] = $matches[2]
+            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
         }
     }
     Write-Success "Environment loaded"
 }
 
-# ─── Initialize Databases ───
+# â”€â”€â”€ Initialize Databases â”€â”€â”€
 Write-Status "Initializing databases..."
 & $PYTHON -c "
 import sys
@@ -150,7 +154,7 @@ print('Databases initialized')
 "
 Write-Success "Databases initialized"
 
-# ─── Start Services ───
+# â”€â”€â”€ Start Services â”€â”€â”€
 Write-Status "Starting all services on single laptop..."
 $services = @()
 $logDir = Join-Path $PROJECT_ROOT "logs"
@@ -159,7 +163,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 # Tier 2 SaaS
 Write-Status "Starting Tier 2 SaaS on port $Tier2Port..."
 $tier2Log = Join-Path $logDir "tier2_saas.log"
-$tier2Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier2_saas.main:app", "--host", "0.0.0.0", "--port", $Tier2Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier2Log -RedirectStandardError $tier2Log
+$tier2Process = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier2_saas.main:app", "--host", "0.0.0.0", "--port", $Tier2Port -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $tier2Log -RedirectStandardError "$tier2Log.err"
 $services += @{ Name = "Tier2 SaaS"; Process = $tier2Process; Port = $Tier2Port; Log = $tier2Log }
 Write-Success "Tier 2 SaaS started (PID: $($tier2Process.Id))"
 
@@ -184,7 +188,7 @@ $env:TIER2_BASE_URL = "http://localhost:$Tier2Port"
 
 Write-Status "Starting Acme Collector on port $Tier1AcmePort..."
 $acmeLog = Join-Path $logDir "tier1_acme.log"
-$acmeProcess = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1AcmePort -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $acmeLog -RedirectStandardError $acmeLog
+$acmeProcess = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1AcmePort -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $acmeLog -RedirectStandardError "$acmeLog.err"
 $services += @{ Name = "Acme Collector"; Process = $acmeProcess; Port = $Tier1AcmePort; Log = $acmeLog }
 Write-Success "Acme Collector started (PID: $($acmeProcess.Id))"
 
@@ -199,7 +203,7 @@ $env:TIER2_BASE_URL = "http://localhost:$Tier2Port"
 
 Write-Status "Starting Globex Collector on port $Tier1GlobexPort..."
 $globexLog = Join-Path $logDir "tier1_globex.log"
-$globexProcess = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1GlobexPort -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $globexLog -RedirectStandardError $globexLog
+$globexProcess = Start-Process -FilePath $PYTHON -ArgumentList "-m", "uvicorn", "services.tier1_collector.main:app", "--host", "0.0.0.0", "--port", $Tier1GlobexPort -WorkingDirectory $PROJECT_ROOT -PassThru -RedirectStandardOutput $globexLog -RedirectStandardError "$globexLog.err"
 $services += @{ Name = "Globex Collector"; Process = $globexProcess; Port = $Tier1GlobexPort; Log = $globexLog }
 Write-Success "Globex Collector started (PID: $($globexProcess.Id))"
 
@@ -221,7 +225,7 @@ Write-Success "Both collectors healthy"
 Write-Status "Starting Next.js UI on port $WebPort..."
 $webLog = Join-Path $logDir "web_ui.log"
 Push-Location $WEB_DIR
-$webProcess = Start-Process -FilePath $NPM -ArgumentList "run", "dev", "--", "-H", "0.0.0.0", "-p", $WebPort -WorkingDirectory $WEB_DIR -PassThru -RedirectStandardOutput $webLog -RedirectStandardError $webLog
+$webProcess = Start-Process -FilePath $NPM -ArgumentList "run", "dev", "--", "-H", "0.0.0.0", "-p", $WebPort -WorkingDirectory $WEB_DIR -PassThru -RedirectStandardOutput $webLog -RedirectStandardError "$webLog.err"
 Pop-Location
 $services += @{ Name = "Next.js UI"; Process = $webProcess; Port = $WebPort; Log = $webLog }
 Write-Success "Next.js UI started (PID: $($webProcess.Id))"
@@ -235,11 +239,11 @@ for ($i = 0; $i -lt 60; $i++) {
 }
 if (-not $ready) { Write-Warning "Next.js may still be compiling. Check $webLog" }
 
-# ─── Summary ───
+# â”€â”€â”€ Summary â”€â”€â”€
 Write-Status ""
-Write-Success "════════════════════════════════════════════════════════════"
+Write-Success "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Success "  CICADA 2026 - SINGLE LAPTOP FALLBACK DEMO READY"
-Write-Success "════════════════════════════════════════════════════════════"
+Write-Success "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Status ""
 Write-Status "All Services on THIS Machine:"
 Write-Status "  Tier 2 SaaS API:      http://localhost:$Tier2Port"
@@ -256,7 +260,7 @@ Write-Status ""
 Write-Status "Press Ctrl+C to stop all services..."
 Write-Status ""
 
-# ─── Wait for Shutdown ───
+# â”€â”€â”€ Wait for Shutdown â”€â”€â”€
 try {
     while ($true) {
         Start-Sleep -Seconds 5
@@ -278,3 +282,4 @@ try {
     }
     Write-Success "All services stopped"
 }
+

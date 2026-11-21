@@ -388,6 +388,9 @@ def process_and_store_telemetry(
     return egress_payload, scrub_result
 
 
+# Initialize tables on import (eager, like Tier 2)
+init_db()
+
+
 if __name__ == "__main__":
-    init_db()
     print("Tier 1 database initialized")

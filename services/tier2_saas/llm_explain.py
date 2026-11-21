@@ -246,7 +246,9 @@ async def call_groq(sanitized_metadata: dict, config: LLMConfig, start_time: flo
     content = data["choices"][0]["message"]["content"]
     parsed = json.loads(content)
 
-    # Validate and add provider metadata
+    # Validate and add provider metadata (pop to avoid duplicate kwargs if LLM echoes them)
+    parsed.pop("ai_provider", None)
+    parsed.pop("llm_latency_ms", None)
     rca = RCAResponse(
         **parsed,
         ai_provider="groq-live",
@@ -280,6 +282,8 @@ async def call_gemini(sanitized_metadata: dict, config: LLMConfig, start_time: f
     content = data["candidates"][0]["content"]["parts"][0]["text"]
     parsed = json.loads(content)
 
+    parsed.pop("ai_provider", None)
+    parsed.pop("llm_latency_ms", None)
     rca = RCAResponse(
         **parsed,
         ai_provider="gemini-live",
