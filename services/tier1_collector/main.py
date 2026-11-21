@@ -176,8 +176,20 @@ async def ingest_telemetry(request: IngestRequest, background_tasks: BackgroundT
     # Generate payload ID
     payload_id = str(uuid.uuid4())[:12]
 
-    # Timestamp
-    event_timestamp_utc = request.event_timestamp_utc or datetime.now(timezone.utc).isoformat()
+    # Timestamp: normalize to guaranteed UTC ISO format ending with Z
+    raw_ts = request.event_timestamp_utc
+    if raw_ts:
+        try:
+            parsed_dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is None:
+                parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+            else:
+                parsed_dt = parsed_dt.astimezone(timezone.utc)
+            event_timestamp_utc = parsed_dt.isoformat().replace("+00:00", "Z")
+        except Exception:
+            event_timestamp_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    else:
+        event_timestamp_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     source_timezone = request.source_timezone or SOURCE_TIMEZONE
 
     # Analyze for security signals (local only)

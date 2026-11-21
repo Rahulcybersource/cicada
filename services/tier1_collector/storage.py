@@ -17,7 +17,16 @@ from typing import Any, Generator, Optional
 
 from cryptography.fernet import Fernet
 
-from .scrubber import process_raw_telemetry, ScrubResult
+from .scrubber import (
+    process_raw_telemetry,
+    scrub_secrets,
+    scrub_dict,
+    enforce_allow_list,
+    validate_and_sanitize_metrics,
+    validate_and_sanitize_collector_meta,
+    validate_and_sanitize_security_summary,
+    ScrubResult,
+)
 
 
 # ─── Encryption ───
@@ -54,20 +63,39 @@ def decrypt_data(encrypted: str) -> str:
 
 # ─── Database Setup ───
 
-DB_PATH = Path(os.getenv("TIER1_DB_PATH", "./tier1_collector.db"))
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+def get_db_path() -> Path:
+    """Get SQLite DB path dynamically from environment."""
+    return Path(os.getenv("TIER1_DB_PATH", "./tier1_collector.db"))
 
-_lock = threading.Lock()
+
+DB_PATH = get_db_path()
+
+_lock = threading.RLock()
 
 
 def get_connection() -> sqlite3.Connection:
     """Get SQLite connection with WAL mode enabled."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    db_path = get_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def ensure_db_initialized() -> None:
+    """Ensure database tables exist lazily without import side-effects."""
+    conn = get_connection()
+    try:
+        cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox_queue'")
+        has_table = cur.fetchone() is not None
+    finally:
+        conn.close()
+
+    if not has_table:
+        init_db()
 
 
 def init_db() -> None:
@@ -151,6 +179,7 @@ def drop_db() -> None:
 def db_transaction() -> Generator[sqlite3.Connection, None, None]:
     """Context manager for database transactions with locking."""
     with _lock:
+        ensure_db_initialized()
         conn = get_connection()
         try:
             yield conn
@@ -221,16 +250,35 @@ def log_egress_proof(
         )
 
 
-def get_pending_outbox(tenant_id: str, limit: int = 100) -> list[dict]:
-    """Get pending payloads for forwarding."""
+def get_pending_outbox(tenant_id: str, limit: int = 100, include_failed_retries: bool = True, max_retries: int = 10) -> list[dict]:
+    """Get pending payloads for forwarding (including eligible failed retries)."""
     with db_transaction() as conn:
-        rows = conn.execute(
-            """SELECT * FROM outbox_queue
-               WHERE tenant_id = ? AND status = 'PENDING'
-               ORDER BY created_at_utc ASC LIMIT ?""",
-            (tenant_id, limit),
-        ).fetchall()
+        if include_failed_retries:
+            rows = conn.execute(
+                """SELECT * FROM outbox_queue
+                   WHERE tenant_id = ? AND (status = 'PENDING' OR (status = 'FAILED' AND retry_count < ?))
+                   ORDER BY created_at_utc ASC LIMIT ?""",
+                (tenant_id, max_retries, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM outbox_queue
+                   WHERE tenant_id = ? AND status = 'PENDING'
+                   ORDER BY created_at_utc ASC LIMIT ?""",
+                (tenant_id, limit),
+            ).fetchall()
         return [dict(row) for row in rows]
+
+
+def retry_failed_outbox(tenant_id: str, max_retries: int = 10) -> int:
+    """Reset failed payloads back to PENDING for retry if below max retries."""
+    with db_transaction() as conn:
+        cursor = conn.execute(
+            """UPDATE outbox_queue SET status = 'PENDING'
+               WHERE tenant_id = ? AND status = 'FAILED' AND retry_count < ?""",
+            (tenant_id, max_retries),
+        )
+        return cursor.rowcount
 
 
 def mark_outbox_sent(payload_id: str) -> None:
@@ -259,9 +307,9 @@ def get_outbox_stats(tenant_id: str) -> dict:
         stats = conn.execute(
             """SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'SENT' THEN 1 ELSE 0 END) as sent,
-                SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed
+                COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0) as pending,
+                COALESCE(SUM(CASE WHEN status = 'SENT' THEN 1 ELSE 0 END), 0) as sent,
+                COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) as failed
                FROM outbox_queue WHERE tenant_id = ?""",
             (tenant_id,),
         ).fetchone()
@@ -340,7 +388,7 @@ def process_and_store_telemetry(
     Complete pipeline: process raw telemetry -> store raw locally -> enqueue egress -> log proof.
     Returns (egress_payload, scrub_result).
     """
-    # Prepare raw payload for local storage (includes everything)
+    # Prepare raw payload for local storage (includes raw telemetry as received)
     raw_payload = {
         **raw_data,
         "payload_id": payload_id,
@@ -357,35 +405,78 @@ def process_and_store_telemetry(
         "collector_meta": collector_meta,
     }
 
-    # Process through scrubber + allow-list
+    # Process raw data through scrubber + pseudonymizer
     egress_payload, scrub_result = process_raw_telemetry(
         raw_data, tenant_id, collector_id, region_id, tenant_salt
     )
+    source_id = egress_payload.get("source_id", "src_unknown")
 
-    # Add required fields to egress payload
-    egress_payload.update({
+    extra_redactions_count = 0
+    extra_redaction_types: list[str] = []
+
+    # 1. Scrub alert_context
+    clean_alert_context: str | None = None
+    if alert_context is not None:
+        alert_str = str(alert_context) if not isinstance(alert_context, str) else alert_context
+        alert_res = scrub_secrets(alert_str)
+        clean_alert_context = alert_res.scrubbed_text
+        extra_redactions_count += alert_res.redactions_count
+        extra_redaction_types.extend(alert_res.redaction_types)
+
+    # 2. Validate and sanitize metrics against explicit allow-list
+    clean_metrics = validate_and_sanitize_metrics(metrics)
+
+    # 3. Scrub and validate security_summary against explicit allow-list
+    clean_security_summary, sec_res = validate_and_sanitize_security_summary(security_summary, tenant_salt)
+    extra_redactions_count += sec_res.redactions_count
+    extra_redaction_types.extend(sec_res.redaction_types)
+
+    # 4. Scrub and validate collector_meta against explicit key allow-list
+    clean_collector_meta, meta_res = validate_and_sanitize_collector_meta(collector_meta, tenant_salt)
+    extra_redactions_count += meta_res.redactions_count
+    extra_redaction_types.extend(meta_res.redaction_types)
+
+    # Combine into composite ScrubResult
+    composite_scrub_result = ScrubResult(
+        scrubbed_text=scrub_result.scrubbed_text,
+        redactions_count=scrub_result.redactions_count + extra_redactions_count,
+        redaction_types=sorted(list(set(scrub_result.redaction_types + extra_redaction_types))),
+    )
+
+    # 5. Build final egress payload strictly from allow-listed fields
+    final_egress_payload = {
         "payload_id": payload_id,
+        "tenant_id": tenant_id,
+        "collector_id": collector_id,
+        "source_id": source_id,
+        "region_id": region_id,
         "event_timestamp_utc": event_timestamp_utc,
         "source_timezone": source_timezone,
         "event_category": event_category,
         "severity": severity,
         "health_state": health_state,
-        "metrics": metrics,
-        "security_summary": security_summary,
-        "alert_context": alert_context,
-        "collector_meta": collector_meta,
-    })
+        "metrics": clean_metrics,
+        "security_summary": clean_security_summary,
+        "alert_context": clean_alert_context,
+        "collector_meta": clean_collector_meta,
+    }
+
+    # 6. Terminal allow-list enforcement immediately before enqueueing
+    final_egress_payload = enforce_allow_list(final_egress_payload)
+
+    # Ensure database tables exist lazily before storage operations
+    ensure_db_initialized()
 
     # Store raw locally (encrypted)
-    store_raw_log(tenant_id, collector_id, egress_payload["source_id"], raw_payload, event_timestamp_utc, scrub_result)
+    store_raw_log(tenant_id, collector_id, source_id, raw_payload, event_timestamp_utc, composite_scrub_result)
 
     # Enqueue for egress
-    enqueue_egress_payload(payload_id, tenant_id, collector_id, egress_payload["source_id"], region_id, egress_payload, scrub_result)
+    enqueue_egress_payload(payload_id, tenant_id, collector_id, source_id, region_id, final_egress_payload, composite_scrub_result)
 
     # Log to egress proof panel
-    log_egress_proof(payload_id, tenant_id, egress_payload, scrub_result)
+    log_egress_proof(payload_id, tenant_id, final_egress_payload, composite_scrub_result)
 
-    return egress_payload, scrub_result
+    return final_egress_payload, composite_scrub_result
 
 
 # Initialize tables on import (eager, like Tier 2)

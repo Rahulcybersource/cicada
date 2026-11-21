@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -164,6 +165,174 @@ def enforce_allow_list(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k in ALLOWED_EGRESS_FIELDS}
 
 
+# ─── Metric Validation ───
+
+ALLOWED_METRIC_NAMES = {
+    "cpu_pct",
+    "mem_pct",
+    "disk_pct",
+    "latency_ms",
+    "packet_loss_pct",
+    "bandwidth_mbps",
+    "failed_login_count",
+    "collector_cpu_pct",
+    "collector_mem_mb",
+    "service_up",
+}
+
+
+def validate_and_sanitize_metrics(metrics: Any) -> dict[str, Any]:
+    """
+    Validate metrics dictionary against explicit allow-list and type rules.
+    - Rejects unapproved metric names.
+    - Rejects nested dictionaries, lists, strings, and None values.
+    - Rejects NaN and infinity.
+    - Rejects booleans for numeric metrics.
+    - Permits boolean exclusively for 'service_up'.
+    - Preserves integer semantics for 'failed_login_count'.
+    - Preserves float semantics for percentage and measurement metrics.
+    - Safely handles malformed/missing/non-dict inputs by returning empty dict.
+    """
+    if not isinstance(metrics, dict):
+        return {}
+
+    sanitized: dict[str, Any] = {}
+    for key, val in metrics.items():
+        if key not in ALLOWED_METRIC_NAMES:
+            continue
+        if val is None:
+            continue
+
+        if key == "service_up":
+            if isinstance(val, bool):
+                sanitized[key] = val
+            continue
+
+        # In Python isinstance(True, int) is True, so reject any boolean for non-boolean metrics
+        if isinstance(val, bool):
+            continue
+
+        if not isinstance(val, (int, float)):
+            continue
+
+        # Reject NaN and Infinity
+        try:
+            if math.isnan(val) or math.isinf(val):
+                continue
+        except (TypeError, ValueError):
+            continue
+
+        if key == "failed_login_count":
+            if isinstance(val, int) and val >= 0:
+                sanitized[key] = int(val)
+            elif isinstance(val, float) and val.is_integer() and val >= 0:
+                sanitized[key] = int(val)
+        else:
+            sanitized[key] = float(val)
+
+    return sanitized
+
+
+# ─── Collector Metadata Validation ───
+
+ALLOWED_COLLECTOR_META_KEYS = {
+    "template_id",
+    "seq_num",
+    "crc16_hex",
+    "frame_sha256",
+    "ttvm_persistence",
+    "tan_risk_score",
+    "tan_risk_level",
+    "ailc_escalation",
+    "ldp_budget_epsilon",
+    "collector_cpu_pct",
+    "collector_mem_mb",
+}
+
+
+def validate_and_sanitize_collector_meta(
+    collector_meta: Any,
+    tenant_salt: str,
+) -> tuple[dict[str, Any], ScrubResult]:
+    """
+    Validate and sanitize collector metadata:
+    - Retains only allow-listed keys from ALLOWED_COLLECTOR_META_KEYS.
+    - Deep scrubs string values for secrets using scrub_dict().
+    - Returns sanitized dictionary and combined ScrubResult.
+    """
+    if not isinstance(collector_meta, dict):
+        return {}, ScrubResult(scrubbed_text="", redactions_count=0, redaction_types=[])
+
+    filtered = {
+        k: v for k, v in collector_meta.items()
+        if k in ALLOWED_COLLECTOR_META_KEYS
+    }
+
+    scrubbed_meta, scrub_res = scrub_dict(filtered, tenant_salt)
+    return scrubbed_meta, scrub_res
+
+
+# ─── Security Summary Validation ───
+
+ALLOWED_SECURITY_SUMMARY_KEYS = {
+    "failed_login_count_60s",
+    "risk_indicator",
+    "total_failures",
+}
+
+ALLOWED_RISK_INDICATORS = {
+    "none",
+    "low",
+    "medium",
+    "high",
+    "critical",
+}
+
+
+def validate_and_sanitize_security_summary(
+    security_summary: Any,
+    tenant_salt: str,
+) -> tuple[dict[str, Any] | None, ScrubResult]:
+    """
+    Validate security_summary against explicit allow-list and type rules:
+    - Retains only allow-listed keys (failed_login_count_60s, risk_indicator, total_failures).
+    - Validates integer fields as non-negative integers (rejects booleans, floats, strings, negatives).
+    - Validates risk_indicator against explicit set of allowed values.
+    - Discards any unapproved keys (e.g. flagged_user, customer PII, raw credentials).
+    - Deep scrubs string values for secrets and accumulates redaction counts.
+    - Returns sanitized dictionary and combined ScrubResult.
+    """
+    if not isinstance(security_summary, dict):
+        return None, ScrubResult(scrubbed_text="", redactions_count=0, redaction_types=[])
+
+    # Accumulate secret redactions from incoming security_summary values
+    _, scrub_res = scrub_dict(security_summary, tenant_salt)
+
+    sanitized: dict[str, Any] = {}
+
+    for k, v in security_summary.items():
+        if k not in ALLOWED_SECURITY_SUMMARY_KEYS:
+            continue
+
+        if k in ("failed_login_count_60s", "total_failures"):
+            # In Python isinstance(True, int) is True, so explicitly reject booleans
+            if isinstance(v, bool):
+                continue
+            if not isinstance(v, int):
+                continue
+            if v < 0:
+                continue
+            sanitized[k] = v
+
+        elif k == "risk_indicator":
+            if isinstance(v, str):
+                v_clean = v.strip().lower()
+                if v_clean in ALLOWED_RISK_INDICATORS:
+                    sanitized[k] = v_clean
+
+    return sanitized, scrub_res
+
+
 # ─── Main Processing Pipeline ───
 
 def process_raw_telemetry(
@@ -197,7 +366,13 @@ def process_raw_telemetry(
                   "severity", "health_state", "metrics", "security_summary",
                   "alert_context", "collector_meta"]:
         if field in scrubbed_data:
-            egress_payload[field] = scrubbed_data[field]
+            if field == "metrics":
+                egress_payload["metrics"] = validate_and_sanitize_metrics(scrubbed_data["metrics"])
+            elif field == "collector_meta":
+                clean_meta, _ = validate_and_sanitize_collector_meta(scrubbed_data["collector_meta"], tenant_salt)
+                egress_payload["collector_meta"] = clean_meta
+            else:
+                egress_payload[field] = scrubbed_data[field]
 
     # 4. Enforce allow-list (defense in depth)
     egress_payload = enforce_allow_list(egress_payload)

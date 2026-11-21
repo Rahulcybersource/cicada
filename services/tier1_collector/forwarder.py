@@ -94,6 +94,10 @@ class Tier2Forwarder:
             await self._client.aclose()
         print(f"[Forwarder] Stopped for tenant={self.tenant_id}")
 
+    async def simulate_outage_and_recovery(self, outage_duration_seconds: int = 10) -> dict:
+        """Simulate Tier 2 outage and verify zero-loss recovery."""
+        return await simulate_outage_and_recovery(self, outage_duration_seconds)
+
     async def _run_loop(self) -> None:
         """Main forwarding loop."""
         while self._running:
@@ -131,6 +135,10 @@ class Tier2Forwarder:
                 mark_outbox_failed(payload_id, result.error or "Unknown error")
                 self._consecutive_failures += 1
                 print(f"[Forwarder] Failed payload_id={payload_id}: {result.error}")
+                err_lower = (result.error or "").lower()
+                if "connection" in err_lower or "503" in err_lower or "timeout" in err_lower or "refused" in err_lower:
+                    print(f"[Forwarder] Tier 2 unavailable ({result.error}). Pausing batch drain.")
+                    break
 
     async def _forward_with_retry(self, payload_id: str, payload: dict) -> ForwardResult:
         """Forward single payload with exponential backoff retry."""
@@ -225,7 +233,8 @@ async def simulate_outage_and_recovery(
     Demo function: simulate Tier 2 outage, watch buffering, verify zero-loss recovery.
     """
     import uuid
-    from storage import enqueue_egress_payload, process_and_store_telemetry
+    from .storage import enqueue_egress_payload, process_and_store_telemetry
+    from .scrubber import ScrubResult
 
     print(f"\n{'='*60}")
     print("SIMULATING TIER 2 OUTAGE")
@@ -237,6 +246,7 @@ async def simulate_outage_and_recovery(
 
     # 2. Inject test payloads during outage
     test_payload_ids = []
+    dummy_scrub = ScrubResult(scrubbed_text="", redactions_count=0, redaction_types=[])
     for i in range(10):
         payload_id = str(uuid.uuid4())[:12]
         test_payload_ids.append(payload_id)
@@ -263,7 +273,7 @@ async def simulate_outage_and_recovery(
         enqueue_egress_payload(
             payload_id, forwarder.tenant_id, forwarder.collector_id,
             "src_outage_test", forwarder.region_id, egress_payload,
-            type('obj', (object,), {"redactions_count": 0, "redaction_types": []})()
+            dummy_scrub,
         )
 
     print(f"Enqueued {len(test_payload_ids)} test payloads during outage")
