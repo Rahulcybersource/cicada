@@ -1,24 +1,10 @@
 import type { Metadata } from "next";
-import { DM_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const dmSans = DM_Sans({
-  subsets: ["latin"],
-  variable: "--font-dm-sans",
-  display: "swap",
-  weight: ["400", "500", "600", "700"],
-});
-
-const jetBrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-jetbrains-mono",
-  display: "swap",
-  weight: ["400", "500", "600", "700"],
-});
-
 export const metadata: Metadata = {
-  title: "CICADA 2026 | Secure AIOps Control Plane",
-  description: "End-to-end secure observability with hybrid Z-score + LLM explainable RCA",
+  title: "SOLARIUS OPS | Enterprise AIOps Observability",
+  description:
+    "Enterprise AIOps Observability Platform with privacy-first edge telemetry, multivariate anomaly detection, and explainable RCA.",
 };
 
 export default function RootLayout({
@@ -27,8 +13,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${dmSans.variable} ${jetBrainsMono.variable}`}>
-      <body className="min-h-screen bg-[#F5F3F0] antialiased font-sans">
+    <html lang="en">
+      <body className="min-h-screen bg-[#F9F7F4] text-[#18181B] antialiased font-sans">
         {children}
       </body>
     </html>

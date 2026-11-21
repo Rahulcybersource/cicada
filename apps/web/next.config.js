@@ -4,6 +4,7 @@ const tier1Url = process.env.NEXT_PUBLIC_TIER1_URL || "http://localhost:8001";
 
 const nextConfig = {
   reactStrictMode: true,
+  cleanDistDir: false,
   experimental: {
     optimizePackageImports: ["lucide-react"],
   },

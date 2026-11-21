@@ -69,5 +69,6 @@ coverage/
 local/
 
 # Logs
-logs/
+/logs/
+!apps/web/src/app/logs/
 *.log

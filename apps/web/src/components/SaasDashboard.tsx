@@ -666,7 +666,7 @@ export function SaasDashboard({ tenantId, onTenantChange }: SaasDashboardProps) 
                 </div>
                 <div className="flex justify-between text-[11px] font-mono text-[#6B6860]">
                   <span>Pydantic Allowlist:</span>
-                  <span className="text-[#2E602E] font-medium">extra="forbid"</span>
+                  <span className="text-[#2E602E] font-medium">{'extra="forbid"'}</span>
                 </div>
               </div>
             </div>
